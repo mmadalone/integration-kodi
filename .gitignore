@@ -101,3 +101,8 @@ ENV/
 
 .DS_Store
 config.json
+# Build artifacts
+dist/
+build/
+*.spec
+*.tar.gz

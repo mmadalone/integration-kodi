@@ -9,6 +9,7 @@ import asyncio
 import base64
 import datetime
 import logging
+import re
 import time
 import urllib.parse
 from asyncio import AbstractEventLoop, Future, Lock, Task, shield
@@ -71,6 +72,20 @@ UPDATE_POSITION_INTERVAL = 300
 UPDATE_STATE_RETRY = 2
 UPDATE_LOCK_TIMEOUT = 10.0
 ERROR_OS_WAIT = 0.5
+
+# Regex for stripping Kodi label formatting tags: [COLOR name], [/COLOR], [B], [I], [CR], etc.
+# Reference: https://kodi.wiki/view/Label_Formatting
+_KODI_MARKUP_RE = re.compile(
+    r'\[(?:COLOR\s[^\]]+|/COLOR|/?(?:B|I|LIGHT|UPPERCASE|LOWERCASE|CAPITALIZE)|CR)\]',
+    re.IGNORECASE
+)
+
+
+def _strip_kodi_formatting(text: str) -> str:
+    """Strip Kodi label formatting tags ([COLOR], [B], [I], etc.)."""
+    if not text or '[' not in text:
+        return text
+    return _KODI_MARKUP_RE.sub('', text).strip()
 
 
 class Events(StrEnum):
@@ -422,9 +437,26 @@ class KodiDevice(IKodiDevice):
             return
         current_state = self._attr_state
         self._reset_state([])
+        self._media_position = 0
+        self._media_duration = 0
+        self._media_title = ""
+        self._media_album = ""
+        self._media_artist = ""
+        self._media_id = ""
+        self._thumbnail = None
+        self._media_image_url = ""
+        self._media_image_data = ""
+        updated_data: dict[str, Any] = {}
         if current_state != self.get_state():
             self._attr_state = self.get_state()
-            self.events.emit(Events.UPDATE, self.id, {MediaAttr.STATE: self.state})
+            updated_data[MediaAttr.STATE] = self.state
+        updated_data[MediaAttr.MEDIA_POSITION] = 0
+        updated_data[MediaAttr.MEDIA_DURATION] = 0
+        updated_data[MediaAttr.MEDIA_TITLE] = ""
+        updated_data[MediaAttr.MEDIA_ALBUM] = ""
+        updated_data[MediaAttr.MEDIA_ARTIST] = ""
+        updated_data[MediaAttr.MEDIA_IMAGE_URL] = ""
+        self.events.emit(Events.UPDATE, self.id, updated_data)
 
     # pylint: disable = W0613
     def on_volume_changed(self, sender: Any, data: dict[str, Any]):
@@ -678,6 +710,9 @@ class KodiDevice(IKodiDevice):
             await self._register_callbacks()
             await self._ping()
             await self._update_states()
+            # Deferred re-poll: artwork may not be available immediately when connecting
+            # to an already-playing session. Uses the same deferred pattern as _update_states().
+            asyncio.create_task(self._update_states(deferred=3))
 
             _LOG.debug("[%s] Connection successful", self._device_config.address)
             if self._websocket_task is None:
@@ -1088,7 +1123,9 @@ class KodiDevice(IKodiDevice):
                     # self._media_image_url = self._media_image_url.removesuffix('%2F')
                     updated_data[MediaAttr.MEDIA_IMAGE_URL] = self.media_artwork
 
-                media_title = self._item.get("title") or self._item.get("label") or self._item.get("file")
+                media_title = _strip_kodi_formatting(
+                    self._item.get("title") or self._item.get("label") or self._item.get("file") or ""
+                )
                 if self.device_config.show_stream_name:
                     streams_name = self.get_streams_name(self._properties)
                     if streams_name and streams_name != "":
@@ -1355,7 +1392,7 @@ class KodiDevice(IKodiDevice):
             MediaAttr.MUTED: self.is_volume_muted,
             MediaAttr.VOLUME: self.volume_level,
             MediaAttr.MEDIA_TYPE: self.media_type,
-            MediaAttr.MEDIA_IMAGE_URL: self.media_image_url if self.media_image_url else "",
+            MediaAttr.MEDIA_IMAGE_URL: self.media_artwork if self.media_artwork else "",
             MediaAttr.MEDIA_TITLE: self.media_title if self.media_title else "",
             MediaAttr.MEDIA_ALBUM: self.media_album if self.media_album else "",
             MediaAttr.MEDIA_ARTIST: self.media_artist if self.media_artist else "",
@@ -1828,6 +1865,9 @@ class KodiDevice(IKodiDevice):
     @retry()
     async def power_off(self):
         """Send Power Off command."""
+        if self._device_config.power_off_command == "None":
+            _LOG.debug("[%s] Power off command disabled", self.device_config.address)
+            return
         try:
             await self._kodi.call_method(self._device_config.power_off_command)
         except TransportError as ex:

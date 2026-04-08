@@ -1,20 +1,20 @@
 {
   "driver_id": "kodi_driver",
-  "version": "1.18.7",
+  "version": "1.18.7-madalone.1",
   "min_core_api": "0.20.0",
   "name": {
     "en": "Kodi"
   },
   "icon":"custom:kodi.png",
   "description": {
-    "en": "Control your Kodi instances with Remote Two/3.",
-    "de": "Steuere Kodi instances mit Remote Two/3.",
-    "fr": "Contrôler vos instances Kodi avec Remote Two/3."
+    "en": "Control your Kodi instances with Remote Two/3. Patched fork with bug fixes.",
+    "de": "Steuere Kodi instances mit Remote Two/3. Gepatchter Fork mit Fehlerbehebungen.",
+    "fr": "Contrôler vos instances Kodi avec Remote Two/3. Fork corrigé."
   },
   "developer": {
-    "name": "Albaintor",
-    "email": "albaintor@github.com",
-    "url": "https://github.com/albaintor"
+    "name": "madalone (fork of Albaintor)",
+    "email": "madalone@github.com",
+    "url": "https://github.com/mmadalone"
   },
   "home_page": "https://github.com/albaintor/integration-kodi",
   "setup_data_schema": {
