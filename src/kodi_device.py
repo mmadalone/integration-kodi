@@ -76,8 +76,7 @@ ERROR_OS_WAIT = 0.5
 # Regex for stripping Kodi label formatting tags: [COLOR name], [/COLOR], [B], [I], [CR], etc.
 # Reference: https://kodi.wiki/view/Label_Formatting
 _KODI_MARKUP_RE = re.compile(
-    r"\[(?:COLOR\s[^\]]+|/COLOR|/?(?:B|I|LIGHT|UPPERCASE|LOWERCASE|CAPITALIZE)|CR)\]",
-    re.IGNORECASE
+    r"\[(?:COLOR\s[^\]]+|/COLOR|/?(?:B|I|LIGHT|UPPERCASE|LOWERCASE|CAPITALIZE)|CR)\]", re.IGNORECASE
 )
 
 
