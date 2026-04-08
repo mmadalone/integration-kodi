@@ -139,6 +139,7 @@ class KodiObjectType(int, Enum):
 
 
 KODI_POWEROFF_COMMANDS: dict[str, dict[str, str]] = {
+    "None": {"en": "None (disabled)", "fr": "Aucune (désactivé)"},
     "Application.Quit": {"en": "Quit application", "fr": "Quitter l'application"},
     "System.Shutdown": {"en": "Shutdown", "fr": "Eteindre"},
     "System.Hibernate": {"en": "Hibernate", "fr": "Veille prolongée"},
