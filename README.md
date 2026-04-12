@@ -43,6 +43,42 @@ This patch makes the `attributes` property use `media_artwork` consistently, mat
 
 Adds a "None (disabled)" option to the Power off command dropdown in integration settings. When selected, the power-off button does nothing — prevents accidental shutdown/hibernate of the Kodi host.
 
+### 6. Suppress Volume Overlay
+
+Opt-in config option that hides the remote's volume overlay popup when changing Kodi volume. The TV already shows Kodi's native OSD — the remote overlay is redundant. Enable "Suppress volume overlay" in integration settings. Also fixes an upstream bug where WebSocket volume events never propagated.
+
+### 7. Security: eval() → ast.literal_eval()
+
+The upstream `custom_command()` method used `eval()` to parse command parameters — a remote code execution risk. Replaced with safe `ast.literal_eval()` after PID variable substitution.
+
+### 8. Missing await in Remote Command Sequences
+
+The remote entity's command sequence handler was missing `await` on `mediaplayer_command()`, causing all commands in a sequence to fire simultaneously instead of sequentially.
+
+### 9. Media Position Elapsed Time Fix
+
+Upstream used `timedelta.seconds` (0–59 range) instead of `timedelta.total_seconds()` to calculate elapsed playback time. Media position reporting was wrong after 1 minute without a Kodi position update.
+
+### 10. Dead Code & Dependency Cleanup
+
+Removed unused `_buffered_callbacks` dead code, credentials from debug logs, unused `httpx`/`defusedxml` dependencies, and pinned loose jsonrpc dependency versions.
+
+### 11. Exception Handling Hardening
+
+Narrowed 6 dangerous `except Exception: pass` blocks to specific exception types (`OSError`, `TransportError`, `ProtocolError`). Unexpected exceptions now propagate instead of being silently swallowed.
+
+### 12. Async Lock Race Condition Fix
+
+Replaced the upstream `_update_lock` timeout mechanism (check-release-acquire, not atomic) with `asyncio.wait_for()` + `try/finally`. Eliminates a race condition that could corrupt shared state under concurrent load.
+
+### 13. Fire-and-Forget Task Observability
+
+Added error-logging callbacks to 11 `create_task()` calls that previously lost exceptions silently. No behavior change — just makes failures visible in logs.
+
+### 14. Sensor State Bug Fix
+
+Fixed `raise self._state` → `return self._state` in the sensor base class `state` property.
+
 ## Recommended Settings
 
 - **Download artwork:** Enabled — provides instant artwork on first entity open by pre-caching images as base64
@@ -104,6 +140,15 @@ These firmware changes live in the main [UC-Remote-UI](.) project, not in this i
 |------|---------|
 | `driver.json` | Updated version, developer, description |
 | `src/const.py` | Added "None (disabled)" to `KODI_POWEROFF_COMMANDS` |
-| `src/kodi_device.py` | Color tag stripping, deferred artwork re-poll on connect, stop handler cleanup, `attributes` property uses `media_artwork`, power-off guard for "None" |
+| `src/kodi_device.py` | Patches 1-6, 9-13: tag stripping, artwork, stop handler, volume overlay, lock refactor, exception hardening, task callbacks, dead code removal |
+| `src/media_player.py` | Patch 7: `eval()` → `ast.literal_eval()` |
+| `src/remote.py` | Patch 8: missing `await` fix |
+| `src/sensor.py` | Patch 14: `raise` → `return` bug fix |
+| `src/config.py` | Patch 6: `suppress_volume_overlay` config field |
+| `src/setup_fields.py` | Patch 6: setup UI checkbox |
+| `src/setup_flow.py` | Patches 6, 10: config wiring, credential scrub |
+| `src/driver.py` | Patch 13: task error callbacks |
+| `src/pykodi/kodi.py` | Documentation: auth check comment |
+| `requirements.txt` | Patch 10: removed unused deps, pinned jsonrpc versions |
 
 See `KODI-INTEGRATION-PATCHES.md` for detailed implementation notes.
