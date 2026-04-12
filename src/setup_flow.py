@@ -423,6 +423,11 @@ class SetupFlow:
                     )
                     set_setup_field(
                         user_input.settings,
+                        "suppress_volume_overlay",
+                        self._reconfigured_device.suppress_volume_overlay,
+                    )
+                    set_setup_field(
+                        user_input.settings,
                         "sensor_audio_stream_config",
                         self._reconfigured_device.sensor_audio_stream_config,
                     )
@@ -602,6 +607,7 @@ class SetupFlow:
         media_update_task = msg.input_values.get("media_update_task", "false") == "true"
         download_artwork = msg.input_values.get("download_artwork", "false") == "true"
         disable_keyboard_map = msg.input_values.get("disable_keyboard_map", "false") == "true"
+        suppress_volume_overlay = msg.input_values.get("suppress_volume_overlay", "false") == "true"
         show_stream_name = msg.input_values.get("show_stream_name", "false") == "true"
         show_stream_language_name = msg.input_values.get("show_stream_language_name", "false") == "true"
         sensor_include_device_name = msg.input_values.get("sensor_include_device_name", "false") == "true"
@@ -628,11 +634,10 @@ class SetupFlow:
                     address = discovered_kodi["ip"]
 
         _LOG.debug(
-            "Starting driver setup for %s, port %s, websocket port %s, username %s, ssl %s",
+            "Starting driver setup for %s, port %s, websocket port %s, ssl %s",
             address,
             port,
             ws_port,
-            username,
             ssl,
         )
         try:
@@ -699,6 +704,7 @@ class SetupFlow:
                 media_update_task=media_update_task,
                 download_artwork=download_artwork,
                 disable_keyboard_map=disable_keyboard_map,
+                suppress_volume_overlay=suppress_volume_overlay,
                 show_stream_name=show_stream_name,
                 show_stream_language_name=show_stream_language_name,
                 sensor_audio_stream_config=sensor_audio_stream_config,
@@ -746,6 +752,7 @@ class SetupFlow:
         media_update_task = msg.input_values.get("media_update_task", "false") == "true"
         download_artwork = msg.input_values.get("download_artwork", "false") == "true"
         disable_keyboard_map = msg.input_values.get("disable_keyboard_map", "false") == "true"
+        suppress_volume_overlay = msg.input_values.get("suppress_volume_overlay", "false") == "true"
         show_stream_name = msg.input_values.get("show_stream_name", "false") == "true"
         show_stream_language_name = msg.input_values.get("show_stream_language_name", "false") == "true"
         sensor_include_device_name = msg.input_values.get("sensor_include_device_name", "false") == "true"
@@ -778,6 +785,7 @@ class SetupFlow:
         self._reconfigured_device.media_update_task = media_update_task
         self._reconfigured_device.download_artwork = download_artwork
         self._reconfigured_device.disable_keyboard_map = disable_keyboard_map
+        self._reconfigured_device.suppress_volume_overlay = suppress_volume_overlay
         self._reconfigured_device.show_stream_name = show_stream_name
         self._reconfigured_device.show_stream_language_name = show_stream_language_name
         self._reconfigured_device.sensor_audio_stream_config = sensor_audio_stream_config
