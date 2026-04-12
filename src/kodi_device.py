@@ -73,6 +73,12 @@ UPDATE_STATE_RETRY = 2
 UPDATE_LOCK_TIMEOUT = 10.0
 ERROR_OS_WAIT = 0.5
 
+
+def _log_task_exception(task: asyncio.Task) -> None:
+    """Log unhandled exceptions from fire-and-forget tasks."""
+    if not task.cancelled() and task.exception():
+        _LOG.error("Unhandled exception in background task: %s", task.exception())
+
 # Regex for stripping Kodi label formatting tags: [COLOR name], [/COLOR], [B], [I], [CR], etc.
 # Reference: https://kodi.wiki/view/Label_Formatting
 _KODI_MARKUP_RE = re.compile(
@@ -230,11 +236,6 @@ async def retry_call_command(
         obj.event_loop.create_task(obj.connect())
         await asyncio.sleep(0)
 
-    # If the command should be bufferized (and retried later) add it to the list and returns OK
-    if bufferize:
-        _LOG.debug("[%s] Bufferize command %s %s", obj.device_config.address, func, args)
-        obj._buffered_callbacks[time.time()] = {"object": obj, "function": func, "args": args, "kwargs": kwargs}
-        return ucapi.StatusCodes.OK
     try:
         # Else (no bufferize) wait (not more than "timeout" seconds) for the connection to complete
         async with asyncio.timeout(max(timeout - 1, 1)):
@@ -251,7 +252,7 @@ async def retry_call_command(
     return ucapi.StatusCodes.OK
 
 
-def retry(*, timeout: float = 5, bufferize=False) -> Callable[
+def retry(*, timeout: float = 5) -> Callable[
     [Callable[Concatenate[_KodiDeviceT, _P], Awaitable[_R]]],
     Callable[Concatenate[_KodiDeviceT, _P], Awaitable[_R]],
 ]:
@@ -268,7 +269,7 @@ def retry(*, timeout: float = 5, bufferize=False) -> Callable[
                 if obj._kodi_connection and obj._kodi_connection.connected:
                     await func(obj, *args, **kwargs)
                     return ucapi.StatusCodes.OK
-                return await retry_call_command(timeout, bufferize, func, obj, *args, **kwargs)
+                return await retry_call_command(timeout, False, func, obj, *args, **kwargs)
             except (TransportError, ProtocolError, ServerTimeoutError) as ex:
                 if obj.state == MediaStates.OFF:
                     log_function = _LOG.debug
@@ -282,7 +283,7 @@ def retry(*, timeout: float = 5, bufferize=False) -> Callable[
                     ex,
                 )
                 try:
-                    return await retry_call_command(timeout, bufferize, func, obj, *args, **kwargs)
+                    return await retry_call_command(timeout, False, func, obj, *args, **kwargs)
                 except (TransportError, ProtocolError, ServerTimeoutError) as ex2:
                     log_function(
                         "[%s] Error calling %s on (%s): %r",
@@ -292,8 +293,7 @@ def retry(*, timeout: float = 5, bufferize=False) -> Callable[
                         ex2,
                     )
                     return ucapi.StatusCodes.BAD_REQUEST
-            # pylint: disable = W0718
-            except Exception as ex:
+            except (TransportError, ProtocolError, ServerTimeoutError, OSError) as ex:
                 _LOG.error("[%s] Unknown error %s %s", obj.device_config.address, func.__name__, ex)
                 return ucapi.StatusCodes.BAD_REQUEST
 
@@ -323,7 +323,10 @@ class KodiDevice(IKodiDevice):
         self._session: ClientSession | None = None
         self._kodi_connection: KodiWSConnection | None = None
         self._kodi: Kodi | None = None
-        self._supported_features = KODI_FEATURES
+        self._supported_features = list(KODI_FEATURES)
+        if device_config.suppress_volume_overlay:
+            for feat in (Features.VOLUME, Features.VOLUME_UP_DOWN, Features.MUTE_TOGGLE, Features.MUTE, Features.UNMUTE):
+                self._supported_features.remove(feat)
         self._players = None
         self._properties = {}
         self._item = {}
@@ -345,16 +348,13 @@ class KodiDevice(IKodiDevice):
         self._thumbnail: str | None = None
         self._attr_state = MediaStates.OFF
         self._websocket_task = None
-        self._buffered_callbacks = {}
         self._connect_lock = Lock()
         self._reconnect_retry = 0
         self._kodi_ws_task = None
         _LOG.debug("[%s] Kodi instance created", device_config.address)
         # self.event_loop.create_task(self.init_connection())
         self._connection_status: Future | None = None
-        self._buffered_callbacks = {}
         self._update_lock = Lock()
-        self._update_lock_time: float = 0
         self._position_timestamp: float | None = None
         self._update_position_task = None
         self._update_state_retry = 0
@@ -425,7 +425,7 @@ class KodiDevice(IKodiDevice):
         _LOG.debug("[%s] Kodi playback changed %s", self.device_config.address, data)
         if "speed" in data.get("player", {}):
             self._properties["speed"] = data["player"]["speed"]
-        self.event_loop.create_task(self._update_states())
+        self.event_loop.create_task(self._update_states()).add_done_callback(_log_task_exception)
 
     # pylint: disable = W0613
     def on_stop(self, sender: str, data: dict[str, Any]):
@@ -466,13 +466,15 @@ class KodiDevice(IKodiDevice):
         self._app_properties["volume"] = data["volume"]
         self._app_properties["muted"] = data["muted"]
         updated_data = {}
-        if volume != self._volume:
+        if volume != int(self._app_properties["volume"]):
             self._volume = int(self._app_properties["volume"])
-            updated_data[MediaAttr.VOLUME] = self._volume
+            if not self._device_config.suppress_volume_overlay:
+                updated_data[MediaAttr.VOLUME] = self._volume
             updated_data[KodiSensors.SENSOR_VOLUME] = self._volume
         if muted != self._app_properties["muted"]:
             self._is_volume_muted = self._app_properties["muted"]
-            updated_data[MediaAttr.MUTED] = self._is_volume_muted
+            if not self._device_config.suppress_volume_overlay:
+                updated_data[MediaAttr.MUTED] = self._is_volume_muted
             updated_data[KodiSensors.SENSOR_VOLUME_MUTED] = self._is_volume_muted
         if updated_data:
             self.events.emit(Events.UPDATE, self.id, updated_data)
@@ -494,7 +496,7 @@ class KodiDevice(IKodiDevice):
             x in ["currentaudiostream", "currentsubtitle", "subtitleenabled", "currentvideostream"]
             for x in data.get("property", {}).keys()
         ):
-            self.event_loop.create_task(self._update_streams(data))
+            self.event_loop.create_task(self._update_streams(data)).add_done_callback(_log_task_exception)
 
     def _get_language(self, info: dict[str, Any], language_first: bool) -> str:
         """Retrieve language name."""
@@ -684,9 +686,9 @@ class KodiDevice(IKodiDevice):
                     _LOG.debug("[%s] Stop watchdog", self.device_config.address)
                     self._websocket_task = None
                     break
-            # pylint: disable = W0718
-            except Exception as ex:
-                _LOG.error("[%s] Unknown exception %s", self.device_config.address, ex)
+            except (OSError, TransportError) as ex:
+                _LOG.error("[%s] Watchdog exception %s", self.device_config.address, ex)
+                await asyncio.sleep(5)
 
     async def connect(self) -> bool:
         """Connect to Kodi via websocket protocol."""
@@ -711,7 +713,7 @@ class KodiDevice(IKodiDevice):
             await self._update_states()
             # Deferred re-poll: artwork may not be available immediately when connecting
             # to an already-playing session. Uses the same deferred pattern as _update_states().
-            asyncio.create_task(self._update_states(deferred=3))
+            asyncio.create_task(self._update_states(deferred=3)).add_done_callback(_log_task_exception)
 
             _LOG.debug("[%s] Connection successful", self._device_config.address)
             if self._websocket_task is None:
@@ -746,9 +748,8 @@ class KodiDevice(IKodiDevice):
                 # , ex, stack_info=True, exc_info=True)
             await self._clear_connection(False)
             return False
-        # pylint: disable = W0718
-        except Exception as ex:
-            _LOG.error("[%s] Unknown exception connect : %s", self.device_config.address, ex)
+        except (OSError, TransportError, CannotConnectError, InvalidAuthError) as ex:
+            _LOG.error("[%s] Connection error: %s", self.device_config.address, ex)
             return False
         finally:
             # After 10 retries, reconnection delay will go from 10 to 30s and stop logging
@@ -797,10 +798,6 @@ class KodiDevice(IKodiDevice):
             self._available = False
             self._websocket_task = None
             self._app_language = None
-            try:
-                self._update_lock.release()
-            except RuntimeError:
-                pass
 
     def _reset_state(self, players=None):
         # pylint: disable = R0915
@@ -816,10 +813,6 @@ class KodiDevice(IKodiDevice):
         self._current_chapter = None
         self._audio_stream = ""
         self._subtitle_stream = ""
-        try:
-            self._update_lock.release()
-        except RuntimeError:
-            pass
         if self._chapter_update_task:
             try:
                 self._chapter_update_task.cancel()
@@ -834,9 +827,8 @@ class KodiDevice(IKodiDevice):
             await asyncio.sleep(UPDATE_POSITION_INTERVAL)
             try:
                 await self._update_position()
-            # pylint: disable = W0718
-            except Exception as ex:
-                _LOG.error("[%s] Unknown exception %s", self.device_config.address, ex)
+            except (OSError, TransportError) as ex:
+                _LOG.error("[%s] Position update error %s", self.device_config.address, ex)
 
     @debounce(2)
     async def update_chapter_task(self):
@@ -911,21 +903,12 @@ class KodiDevice(IKodiDevice):
             self._reset_state()
             return
 
-        if self._update_lock.locked():
-            _LOG.debug("[%s] Update states already locked", self.device_config.address)
-            if time.time() - self._update_lock_time > UPDATE_LOCK_TIMEOUT:
-                _LOG.warning(
-                    "[%s] Update is locked since a too long time, unlock it anyway", self._device_config.address
-                )
-                try:
-                    self._update_lock.release()
-                except RuntimeError:
-                    pass
-            else:
-                return
+        try:
+            await asyncio.wait_for(self._update_lock.acquire(), timeout=UPDATE_LOCK_TIMEOUT)
+        except asyncio.TimeoutError:
+            _LOG.warning("[%s] Update states lock acquisition timed out, skipping", self.device_config.address)
+            return
         _LOG.debug("[%s] Update states in progress", self.device_config.address)
-        await self._update_lock.acquire()
-        self._update_lock_time = time.time()
         updated_data = {}
 
         # pylint: disable = R1702
@@ -936,10 +919,6 @@ class KodiDevice(IKodiDevice):
                 self._reset_state()
                 if current_state != self.state:
                     self.events.emit(Events.UPDATE, self.id, {MediaAttr.STATE: self.state})
-                try:
-                    self._update_lock.release()
-                except RuntimeError:
-                    pass
                 return
 
             if self._players and len(self._players) > 0:
@@ -947,11 +926,13 @@ class KodiDevice(IKodiDevice):
                 volume = int(self._app_properties["volume"])
                 if self._volume != volume:
                     self._volume = volume
-                    updated_data[MediaAttr.VOLUME] = self._volume
+                    if not self._device_config.suppress_volume_overlay:
+                        updated_data[MediaAttr.VOLUME] = self._volume
                 muted = self._app_properties["muted"]
                 if muted != self._is_volume_muted:
                     self._is_volume_muted = muted
-                    updated_data[MediaAttr.MUTED] = muted
+                    if not self._device_config.suppress_volume_overlay:
+                        updated_data[MediaAttr.MUTED] = muted
 
                 if self._app_language is None:
                     self._app_language = await self.get_app_language()
@@ -1287,7 +1268,9 @@ class KodiDevice(IKodiDevice):
                         media_title,
                         deferred,
                     )
-                    asyncio.create_task(self._update_states(deferred=deferred))
+                    asyncio.create_task(self._update_states(deferred=deferred)).add_done_callback(
+                        _log_task_exception
+                    )
 
             else:
                 self._reset_state([])
@@ -1345,7 +1328,7 @@ class KodiDevice(IKodiDevice):
                     self._update_state_retry,
                     timeout_error,
                 )
-                asyncio.create_task(self._update_states(deferred=1))
+                asyncio.create_task(self._update_states(deferred=1)).add_done_callback(_log_task_exception)
             else:
                 _LOG.info(
                     "[%s] Update states : timeout error : %s %s",
@@ -1354,17 +1337,14 @@ class KodiDevice(IKodiDevice):
                     timeout_error,
                 )
                 self._update_state_retry = 0
-        # pylint: disable = W0718
-        except Exception as ex:
-            _LOG.info(
-                "[%s] Update states : unknown error : %s",
+        except (OSError, TransportError, ProtocolError) as ex:
+            _LOG.warning(
+                "[%s] Update states error: %s",
                 self.device_config.address,
                 ex,
             )
-        try:
+        finally:
             self._update_lock.release()
-        except RuntimeError:
-            pass
 
     @property
     def client(self) -> Kodi | None:
@@ -1388,8 +1368,6 @@ class KodiDevice(IKodiDevice):
         """Return the device attributes."""
         attributes = {
             MediaAttr.STATE: self.get_state(),
-            MediaAttr.MUTED: self.is_volume_muted,
-            MediaAttr.VOLUME: self.volume_level,
             MediaAttr.MEDIA_TYPE: self.media_type,
             MediaAttr.MEDIA_IMAGE_URL: self.media_artwork if self.media_artwork else "",
             MediaAttr.MEDIA_TITLE: self.media_title if self.media_title else "",
@@ -1446,6 +1424,9 @@ class KodiDevice(IKodiDevice):
             # TODO when UC library udpated
             "media_id": self._media_id,
         }
+        if not self._device_config.suppress_volume_overlay:
+            attributes[MediaAttr.VOLUME] = self.volume_level
+            attributes[MediaAttr.MUTED] = self.is_volume_muted
         return attributes
 
     @property
@@ -1504,7 +1485,7 @@ class KodiDevice(IKodiDevice):
         if self.state != MediaStates.PLAYING or self._media_position_updated_at is None:
             return self.media_position
         elapsed_time = datetime.datetime.now(datetime.timezone.utc) - self._media_position_updated_at
-        position = self.media_position + elapsed_time.seconds
+        position = self.media_position + int(elapsed_time.total_seconds())
         if self.media_duration > 0 and position < self.media_duration:
             return position
         return self.media_position
@@ -1873,9 +1854,8 @@ class KodiDevice(IKodiDevice):
             _LOG.info("[%s] Power off : client is already disconnected %s", self.device_config.address, ex)
             try:
                 await self.event_loop.create_task(self._update_states())
-            # pylint: disable = W0718
-            except Exception:
-                pass
+            except (OSError, TransportError) as ex:
+                _LOG.warning("[%s] Post power-off state update failed: %s", self.device_config.address, ex)
 
     @retry()
     async def command_button(self, button: ButtonKeymap):
