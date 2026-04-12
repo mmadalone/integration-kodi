@@ -168,18 +168,17 @@ class SetupFlow:
             _LOG.error("No or invalid user response was received: %s (step %s)", msg, self._setup_step)
         elif isinstance(msg, AbortDriverSetup):
             _LOG.info("Setup was aborted with code: %s", msg.error)
-            # pylint: disable = W0718
             if self._pairing_device:
                 try:
                     await self._pairing_device.close()
-                except Exception:
-                    pass
+                except (OSError, CannotConnectError) as ex:
+                    _LOG.debug("Error closing pairing device on abort: %s", ex)
                 self._pairing_device = None
             if self._pairing_device_ws:
                 try:
                     await self._pairing_device_ws.close()
-                except Exception:
-                    pass
+                except (OSError, CannotConnectError) as ex:
+                    _LOG.debug("Error closing pairing websocket on abort: %s", ex)
                 self._pairing_device_ws = None
             self._setup_step = SetupSteps.INIT
 
@@ -581,14 +580,14 @@ class SetupFlow:
         if self._pairing_device:
             try:
                 await self._pairing_device.close()
-            except Exception:
-                pass
+            except (OSError, CannotConnectError) as ex:
+                _LOG.debug("Error closing previous pairing device: %s", ex)
             self._pairing_device = None
         if self._pairing_device_ws:
             try:
                 await self._pairing_device_ws.close()
-            except Exception:
-                pass
+            except (OSError, CannotConnectError) as ex:
+                _LOG.debug("Error closing previous pairing websocket: %s", ex)
             self._pairing_device_ws = None
 
         dropdown_items = []

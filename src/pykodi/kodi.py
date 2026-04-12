@@ -155,9 +155,8 @@ class KodiWSConnection(KodiConnection):
                 try:
                     self._connect_task.cancel()
                     await self.close()
-                # pylint: disable = W0718
-                except Exception:
-                    pass
+                except (OSError, asyncio.CancelledError, jsonrpc_base.jsonrpc.TransportError) as ex:
+                    _LOG.debug("Ignoring error while cancelling previous connect task: %s", ex)
                 self._connect_task = None
 
             self._connect_task = await self._ws_server.ws_connect()
@@ -209,8 +208,8 @@ class Kodi:
         try:
             name = (await self.get_application_properties(["name"]))["name"]
             return name
-        # pylint: disable = W0718
-        except Exception:
+        except (jsonrpc_base.jsonrpc.TransportError, jsonrpc_base.jsonrpc.ProtocolError, KeyError, TypeError) as ex:
+            _LOG.debug("Could not retrieve Kodi instance name: %s", ex)
             return None
 
     async def get_player_properties(self, player, properties):

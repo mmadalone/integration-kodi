@@ -51,8 +51,7 @@ class KodiDiscover(ServiceListener):
         _id = server
         try:
             _id = info.properties[b"uuid"].decode("ascii")
-        # pylint: disable = W0718
-        except Exception:
-            pass
+        except (KeyError, AttributeError, UnicodeDecodeError) as ex:
+            _LOG.debug("No uuid property on discovered service %s: %s", name, ex)
         self._services_found.append({"server": server, "ip": ip, "port": port, "name": name, "id": _id, "info": info})
         _LOG.debug("Discovered service %s : %s", name, info)
