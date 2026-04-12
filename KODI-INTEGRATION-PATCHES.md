@@ -309,6 +309,22 @@ position = self.media_position + int(elapsed_time.total_seconds())
 
 ---
 
+## Patch 19: Fix Empty Select/Sensor Attributes on Entity Subscribe
+
+**Files:** `src/selector.py`, `src/sensor.py`
+
+**Problem:** After shipping `.5` the audio-stream and subtitle-stream select entities on the Remote were empty even when Kodi had real tracks available. Regression introduced by the upstream cherry-pick in `.4` (commit `0589714`, "Fixed warnings with unknown and initialization of entities attributes").
+
+The upstream commit added a dynamic `all_attributes` property to `KodiSelect` and `KodiSensor` and used it to initialize the base class — so the entities now boot with real values instead of empty dicts. But the same commit changed `update_attributes(update=None)` to return `self.attributes` (the **frozen** dict stored by the base class at `__init__` time) instead of recomputing via `all_attributes`.
+
+`driver.py:146,148` calls `entity.update_attributes()` with no argument on every `SUBSCRIBE_ENTITIES` event — i.e. every time the Remote opens the select widget. At that moment the driver returned the stale dict from construction time, when `audio_tracks`/`subtitle_tracks` were still empty (the first Kodi poll hadn't happened yet). The Remote cached that empty list and never saw the real options arrive.
+
+**Solution:** Change the `return self.attributes` fallback in both `KodiSelect.update_attributes` (`selector.py:76`) and `KodiSensor.update_attributes` (`sensor.py:92`) to `return self.all_attributes`. `all_attributes` is the dynamic property that reads `current_option` / `select_options` / `sensor_value` fresh every call — so a subscribe event always gets the current state.
+
+Upstream never hit this because their manual test didn't subscribe-after-play — the bug only appears in the subscribe-then-populate-then-resubscribe flow the Remote firmware actually uses.
+
+---
+
 ## Companion Firmware Fixes (remote-ui)
 
 These fixes live in the main UC-Remote-UI project, not in this integration directory. They address [UC firmware bug #364](https://github.com/unfoldedcircle/feature-and-bug-tracker/issues/364) which affects all media player integrations.
