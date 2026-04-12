@@ -227,16 +227,28 @@ class KodiMediaPlayer(KodiEntity, MediaPlayer):
             _LOG.debug("[%s] Action command Input.ExecuteAction %s", device.device_config.address, value)
             return await device.call_command_args("Input.ExecuteAction", value)
         params = {}
-        try:
-            # Parse arguments from custom command, substituting PID with actual player ID
-            if len(arguments) == 2:
-                arg_str = arguments[1]
-                pid = device.player_id if device.player_id is not None else 1
-                arg_str = arg_str.replace("PID", str(pid))
+        if len(arguments) == 2:
+            arg_str = arguments[1]
+            pid = device.player_id if device.player_id is not None else 1
+            arg_str = arg_str.replace("PID", str(pid))
+            try:
                 params = ast.literal_eval(arg_str)
-        # pylint: disable = W0718
-        except Exception as ex:
-            _LOG.error("[%s] Custom command bad arguments : %s %s", device.device_config.address, arguments[1], ex)
+            except (ValueError, SyntaxError, TypeError) as ex:
+                _LOG.error(
+                    "[%s] Custom command bad arguments : %s %s",
+                    device.device_config.address,
+                    arguments[1],
+                    ex,
+                )
+                return StatusCodes.BAD_REQUEST
+            if not isinstance(params, dict):
+                _LOG.error(
+                    "[%s] Custom command arguments must parse to a dict, got %s: %r",
+                    device.device_config.address,
+                    type(params).__name__,
+                    params,
+                )
+                return StatusCodes.BAD_REQUEST
         _LOG.debug("[%s] Custom command : %s %s", device.device_config.address, command, params)
         return await device.call_command(command_key, **params)
 
