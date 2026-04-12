@@ -62,7 +62,7 @@ class KodiSensor(KodiEntity, Sensor):
     @property
     def state(self) -> States:
         """Return sensor state."""
-        raise self._state
+        return self._state
 
     @property
     def sensor_value(self) -> str:

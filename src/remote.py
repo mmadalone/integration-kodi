@@ -143,7 +143,7 @@ class KodiRemote(KodiEntity, Remote):
             else:
                 commands = params.get("sequence", [])
                 for command in commands:
-                    result = KodiMediaPlayer.mediaplayer_command(self.id, self._device, command, params)
+                    result = await KodiMediaPlayer.mediaplayer_command(self.id, self._device, command, params)
                     if result == StatusCodes.NOT_IMPLEMENTED:
                         result = await self._device.command_button(
                             {"button": command, "keymap": "KB", "holdtime": hold}
