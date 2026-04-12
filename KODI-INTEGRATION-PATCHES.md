@@ -155,6 +155,88 @@ if self._device_config.power_off_command == "None":
 
 ---
 
+## Patch 6: Suppress Volume Overlay on Remote
+
+**Files:** `src/config.py`, `src/kodi_device.py`, `src/setup_fields.py`, `src/setup_flow.py`
+
+**Problem:** When changing Kodi volume via the UC Remote's hardware buttons, the remote displays a large volume overlay (number + slider, or "+" icon) on its screen. This is redundant because Kodi already shows its own volume OSD on the TV.
+
+**Solution:** Configurable option `suppress_volume_overlay` (default `False`). When enabled:
+
+1. Removes all volume-related features from the media player entity: `Features.VOLUME`, `Features.VOLUME_UP_DOWN`, `Features.MUTE_TOGGLE`, `Features.MUTE`, `Features.UNMUTE`.
+2. Stops emitting `MediaAttr.VOLUME` and `MediaAttr.MUTED` in media player update events and the `attributes` property.
+3. Keeps internal state tracking (`self._volume`, `self._is_volume_muted`) intact — needed for mute toggle logic.
+4. Sensor entities (`KodiSensorVolume`, `KodiSensorMuted`) continue updating via separate `KodiSensors.SENSOR_VOLUME` keys.
+
+Volume commands still work through the remote entity's button mappings (`KODI_REMOTE_BUTTONS_MAPPING`), which route through `KodiMediaPlayer.mediaplayer_command()` independently of the media player entity's feature list.
+
+**Config field:** `suppress_volume_overlay: bool = field(default=False)` in `KodiConfigDevice`.
+
+**Setup UI:** Checkbox "Suppress volume overlay on remote (use TV's OSD instead)".
+
+**Bug fix included:** `on_volume_changed()` had a comparison `volume != self._volume` (line 469 upstream) that was always `False` because `self._volume` hadn't been updated yet. Changed to `volume != int(self._app_properties["volume"])`. This means WebSocket volume events now actually propagate — upstream only caught volume changes via polling.
+
+---
+
+## Patch 7: eval() Replaced with ast.literal_eval() (Security Fix)
+
+**File:** `src/media_player.py`
+
+**Problem:** `custom_command()` used `eval(arguments[1])` to parse command parameters, allowing arbitrary Python code execution. The `eval()` was needed to support `PID` variable substitution (e.g., `{"playerid": PID, "to": "next"}`).
+
+**Solution:** Replace `PID` in the argument string with the actual player ID value, then parse with `ast.literal_eval()`:
+
+```python
+# Before:
+PID = device.player_id
+params = eval(arguments[1])
+
+# After:
+pid = device.player_id if device.player_id is not None else 1
+arg_str = arguments[1].replace("PID", str(pid))
+params = ast.literal_eval(arg_str)
+```
+
+`ast.literal_eval()` only accepts Python literals (dicts, lists, strings, numbers, booleans, None) — no function calls, imports, or arbitrary expressions.
+
+---
+
+## Patch 8: Missing await in Remote Command Sequence
+
+**File:** `src/remote.py`
+
+**Problem:** In `send_commands()`, the command sequence branch (`SEND_CMD_SEQUENCE`) called `KodiMediaPlayer.mediaplayer_command()` without `await`:
+
+```python
+# Before:
+result = KodiMediaPlayer.mediaplayer_command(self.id, self._device, command, params)
+
+# After:
+result = await KodiMediaPlayer.mediaplayer_command(self.id, self._device, command, params)
+```
+
+Without `await`, the result was a coroutine object (always truthy), never `StatusCodes.NOT_IMPLEMENTED`, so the keyboard button fallback never triggered. Commands in a sequence also fired simultaneously instead of sequentially.
+
+---
+
+## Patch 9: Media Position Elapsed Time Fix
+
+**File:** `src/kodi_device.py`
+
+**Problem:** `media_position_updated` property used `elapsed_time.seconds` to calculate current playback position. `timedelta.seconds` returns only the seconds component (0–59), not total elapsed seconds. After 1 minute of playback without a position update from Kodi, the reported position wraps incorrectly.
+
+```python
+# Before:
+position = self.media_position + elapsed_time.seconds
+
+# After:
+position = self.media_position + int(elapsed_time.total_seconds())
+```
+
+`total_seconds()` returns the full duration as a float (e.g., 125.3 for 2m5.3s). `int()` truncates to match the integer position format.
+
+---
+
 ## Companion Firmware Fixes (remote-ui)
 
 These fixes live in the main UC-Remote-UI project, not in this integration directory. They address [UC firmware bug #364](https://github.com/unfoldedcircle/feature-and-bug-tracker/issues/364) which affects all media player integrations.
