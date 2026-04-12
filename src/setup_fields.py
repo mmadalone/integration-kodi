@@ -216,6 +216,14 @@ SETUP_FIELDS = [
         },
     },
     {
+        "field": {"checkbox": {"value": False}},
+        "id": "suppress_volume_overlay",
+        "label": {
+            "en": "Suppress volume overlay on remote (use TV's OSD instead)",
+            "fr": "Masquer l'indicateur de volume sur la telecommande (utiliser l'OSD de la TV)",
+        },
+    },
+    {
         "field": {
             "dropdown": {
                 "value": next(iter(KODI_POWEROFF_COMMANDS)),
