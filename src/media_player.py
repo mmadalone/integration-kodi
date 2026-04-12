@@ -5,6 +5,7 @@ Media-player entity functions.
 :license: Mozilla Public License Version 2.0, see LICENSE for more details.
 """
 
+import ast
 import logging
 from typing import Any
 
@@ -227,13 +228,12 @@ class KodiMediaPlayer(KodiEntity, MediaPlayer):
             return await device.call_command_args("Input.ExecuteAction", value)
         params = {}
         try:
-            # Evaluate arguments from custom command and create necessary variables (PID)
+            # Parse arguments from custom command, substituting PID with actual player ID
             if len(arguments) == 2:
-                # pylint: disable=C0103,W0123,W0612
-                PID = 1  # noqa: F841
-                if "PID" in arguments[1]:
-                    PID = device.player_id  # noqa: F841
-                params = eval(arguments[1])
+                arg_str = arguments[1]
+                pid = device.player_id if device.player_id is not None else 1
+                arg_str = arg_str.replace("PID", str(pid))
+                params = ast.literal_eval(arg_str)
         # pylint: disable = W0718
         except Exception as ex:
             _LOG.error("[%s] Custom command bad arguments : %s %s", device.device_config.address, arguments[1], ex)

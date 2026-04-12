@@ -195,6 +195,7 @@ class Kodi:
             response = await self._server.JSONRPC.Ping()
             return response == "pong"
         except jsonrpc_base.jsonrpc.TransportError as error:
+            # TransportError has no status_code attribute; string check is the only option
             if "401" in str(error):
                 raise InvalidAuthError from error
             raise CannotConnectError from error
