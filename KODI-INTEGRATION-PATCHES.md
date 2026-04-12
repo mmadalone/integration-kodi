@@ -237,6 +237,78 @@ position = self.media_position + int(elapsed_time.total_seconds())
 
 ---
 
+## Patch 15: Custom Command BAD_REQUEST on Parse Failure
+
+**File:** `src/media_player.py`
+
+**Problem:** Patch 7 replaced `eval()` with `ast.literal_eval()` but left the surrounding control flow intact: on parse failure the except block logged the error and then fell through to `device.call_command(command_key, **params)` with `params = {}`. The user saw "success" while a corrupted command was issued.
+
+**Solution:** Return `StatusCodes.BAD_REQUEST` when `ast.literal_eval` raises, and when the parsed value is not a dict (defensive — custom commands require a mapping to unpack as `**params`). Narrows the exception set to `(ValueError, SyntaxError, TypeError)`.
+
+---
+
+## Patch 16: Narrow Remaining Bare Exceptions
+
+**Files:** `src/config.py`, `src/discover.py`, `src/pykodi/kodi.py`, `src/setup_flow.py`, `src/kodi_device.py`, `src/media_browser.py`
+
+**Problem:** Audit of the `.4` build found 16 remaining `except Exception: pass` / `except Exception:` blocks outside the scope of patch 11. Most silently swallowed failures: discovery UUID extraction, connection close cleanup, setup-flow pairing cleanup, chapter-extraction parsing, play-pause fallback, top-level browse fallback, config-restore-on-import-failure, task cancellation paths.
+
+**Solution:** Every catch narrowed to a concrete exception set appropriate for the operation. Every silent `pass` replaced with a debug/warning log so failures are visible.
+
+| Location | Old | New |
+|----------|-----|-----|
+| `config.py:272` (import) | `Exception` | `(OSError, ValueError, TypeError, KeyError)` |
+| `config.py:282` (restore) | `Exception: pass` | `OSError` + error log |
+| `discover.py:55` (uuid) | `Exception: pass` | `(KeyError, AttributeError, UnicodeDecodeError)` + debug |
+| `pykodi/kodi.py:159` (cancel) | `Exception: pass` | `(OSError, CancelledError, TransportError)` + debug |
+| `pykodi/kodi.py:213` (get_name) | `Exception` | `(TransportError, ProtocolError, KeyError, TypeError)` + debug |
+| `setup_flow.py:175,181,584,590` (close) | `Exception: pass` | `(OSError, CannotConnectError)` + debug |
+| `kodi_device.py:376` (init close) | `Exception: pass` | `(OSError, TransportError)` + debug |
+| `kodi_device.py:613` (clear close) | `Exception: pass` | `(OSError, TransportError, AttributeError)` + debug |
+| `kodi_device.py:626` (ping) | `Exception` | `(OSError, ProtocolError)` |
+| `kodi_device.py:740` (OS wait) | `Exception: pass` | `(IndexError, AttributeError)` |
+| `kodi_device.py:820,840,1206` (cancel) | `Exception: pass` | `(RuntimeError, AttributeError)` |
+| `kodi_device.py:1175` (chapters) | `Exception: pass` | `(KeyError, IndexError, TypeError, ValueError)` + debug (uncommented log) |
+| `kodi_device.py:1795` (playpause) | `Exception` | `(TransportError, ProtocolError, CannotConnectError, ServerTimeoutError, OSError)` + debug |
+| `kodi_device.py:2044` (language) | `Exception` | `(TransportError, ProtocolError, KeyError, TypeError)` + debug |
+| `media_browser.py:637,806,1010` (per-item) | `Exception: pass` | `(KeyError, IndexError, TypeError[, AttributeError])` + debug, loop continues |
+| `media_browser.py:1065` (top-level browse) | `Exception` | `(TransportError, ProtocolError, KeyError, IndexError, TypeError, AttributeError, ValueError)` — added `import jsonrpc_base` |
+
+**Intent:** per-item loops in `media_browser.py` keep broad-ish catches (all the dict-shape errors) because one bad item should never kill a whole library browse — but they now log the skip so we can see it. Every other catch is tight enough that unknown bugs propagate instead of vanishing.
+
+**Result:** zero remaining `except Exception:` or bare `except:` in live code (one commented-out line remains in `media_browser.py`, unreachable).
+
+---
+
+## Patch 17: Reconnect Delay Jitter
+
+**File:** `src/kodi_device.py`
+
+**Problem:** `start_watchdog()` slept for a fixed `WEBSOCKET_WATCHDOG_INTERVAL` (10s, or 30s once `_reconnect_retry >= 20`). In a fleet-of-Remotes deployment — or even a single Remote after a router reboot — every driver instance wakes up on the exact same cadence, hammering the Kodi instance with synchronized reconnect bursts.
+
+**Solution:** Multiply each sleep by `random.uniform(0.75, 1.25)` — ±25% jitter. Added `import random`. No change to the mean cadence, just breaks the lock-step.
+
+---
+
+## Patch 18: KodiConfigDevice Validation in `__post_init__`
+
+**File:** `src/config.py`
+
+**Problem:** `KodiConfigDevice` was a bare dataclass that accepted wrong types silently. Invalid ports, blank addresses, or string-typed booleans from legacy configs would slip through to runtime where they'd fail in obscure places (JSON-RPC URL construction, Kodi connect, etc.).
+
+**Solution:** Extend `__post_init__` after the existing default-application pass:
+
+1. **Boolean coercion.** Fields that may arrive as `"true"`/`"false"` strings from setup flow or legacy JSON (`ssl`, `media_update_task`, `download_artwork`, `disable_keyboard_map`, `suppress_volume_overlay`, `show_stream_name`, `show_stream_language_name`, `sensor_include_device_name`, `log_additional_data`) are coerced to `bool`.
+2. **Integer coercion.** `sensor_audio_stream_config` / `sensor_subtitle_stream_config` are coerced via `int()`; `ValueError` raised on garbage.
+3. **Identity fields.** `id`, `name`, `address` must be non-empty strings (whitespace-only is rejected).
+4. **Ports.** `port` (required) and `ws_port` (may be None for HTTP-only mode) pass through `_validate_port()`, which accepts ints or int-parseable strings, requires the 1–65535 range, and returns the canonical string form.
+
+`config.py:load()` already catches `TypeError` when constructing `KodiConfigDevice` from JSON — extended to also catch the new `ValueError`, so a single corrupt config entry is skipped with a warning rather than killing the entire load.
+
+**Why in `__post_init__` and not elsewhere:** fail-fast at the boundary. An invalid config should be rejected the moment it's materialized, not when it eventually gets used during a network call.
+
+---
+
 ## Companion Firmware Fixes (remote-ui)
 
 These fixes live in the main UC-Remote-UI project, not in this integration directory. They address [UC firmware bug #364](https://github.com/unfoldedcircle/feature-and-bug-tracker/issues/364) which affects all media player integrations.
