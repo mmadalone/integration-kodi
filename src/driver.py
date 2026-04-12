@@ -17,6 +17,7 @@ import ucapi
 
 import config
 import kodi_device
+from kodi_device import _log_task_exception
 import media_player
 import remote
 import selector
@@ -323,11 +324,11 @@ def _configure_new_device(device_config: config.KodiConfigDevice, connect: bool 
     # the device should not yet be configured, but better be safe
     if device_config.id in _configured_kodis:
         device = _configured_kodis[device_config.id]
-        asyncio.create_task(device.disconnect())
+        asyncio.create_task(device.disconnect()).add_done_callback(_log_task_exception)
     else:
         device = kodi_device.KodiDevice(device_config, loop=_LOOP)
 
-        asyncio.create_task(on_device_connected(device.id))
+        asyncio.create_task(on_device_connected(device.id)).add_done_callback(_log_task_exception)
         # asyncio.rundevice.events.on(lg.Events.CONNECTED, on_device_connected)
         # device.events.on(lg.Events.DISCONNECTED, on_device_disconnected)
         device.events.on(kodi_device.Events.ERROR, on_device_connection_error)
@@ -342,7 +343,7 @@ def _configure_new_device(device_config: config.KodiConfigDevice, connect: bool 
     if connect:
         # start background connection task
         try:
-            _LOOP.create_task(device.connect())
+            _LOOP.create_task(device.connect()).add_done_callback(_log_task_exception)
         except RuntimeError as ex:
             _LOG.debug("Could not connect to device, probably because it is starting with magic packet %s", ex)
 
@@ -384,7 +385,7 @@ def on_device_added(device: config.KodiConfigDevice) -> None:
         _configure_new_device(device, connect=False)
         await on_device_connected(device.id)
 
-    asyncio.create_task(_add_device(device))
+    asyncio.create_task(_add_device(device)).add_done_callback(_log_task_exception)
 
 
 def on_device_updated(device: config.KodiConfigDevice) -> None:
@@ -398,7 +399,7 @@ def on_device_removed(device: config.KodiConfigDevice | None) -> None:
     if device is None:
         _LOG.debug("Configuration cleared, disconnecting & removing all configured Kodi instances")
         for configured in _configured_kodis.values():
-            _LOOP.create_task(_async_remove(configured))
+            _LOOP.create_task(_async_remove(configured)).add_done_callback(_log_task_exception)
         _configured_kodis.clear()
         api.configured_entities.clear()
         api.available_entities.clear()
@@ -406,7 +407,7 @@ def on_device_removed(device: config.KodiConfigDevice | None) -> None:
         if device.id in _configured_kodis:
             _LOG.debug("Disconnecting from removed Kodi %s", device.id)
             configured = _configured_kodis.pop(device.id)
-            _LOOP.create_task(_async_remove(configured))
+            _LOOP.create_task(_async_remove(configured)).add_done_callback(_log_task_exception)
             for entity in _get_entities(configured.id):
                 api.configured_entities.remove(entity.id)
                 api.available_entities.remove(entity.id)
