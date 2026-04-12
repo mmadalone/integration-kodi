@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 from urllib.parse import quote, unquote
 
+import jsonrpc_base
 from ucapi import StatusCodes
 from ucapi.api_definitions import (
     BrowseMediaItem,
@@ -633,9 +634,13 @@ class MediaBrowser:
                             else:
                                 parent_media_id = media_id
                             item.items.append(self.get_back_item(parent_media_id, media_type))
-                        # pylint: disable = W0718
-                        except Exception:
-                            pass
+                        except (KeyError, AttributeError, TypeError) as ex:
+                            _LOG.debug(
+                                "[%s] Could not build back item for %s: %s",
+                                self._device.device_config.address,
+                                media_id,
+                                ex,
+                            )
                     for genre in data.get("genres", []):
                         item.items.append(self.get_item_from_genre(media_type, genre, media_id))
                 elif entry.output == KodiObjectType.ARTIST:
@@ -803,8 +808,12 @@ class MediaBrowser:
                             item.title = (
                                 episodes["episodes"][0]["showtitle"] + " - " + str(episodes["episodes"][0]["season"])
                             )
-                        except Exception:  # pylint: disable = W0718
-                            pass
+                        except (KeyError, IndexError, TypeError) as ex:
+                            _LOG.debug(
+                                "[%s] Episode missing showtitle/season fields: %s",
+                                self._device.device_config.address,
+                                ex,
+                            )
                     paging.count = episodes.get("limits", {}).get("total", 0)
                     if self._back_support:
                         paging.count = paging.count + 1
@@ -1007,8 +1016,12 @@ class MediaBrowser:
                     if len(medias["albums"]) > 0:
                         try:
                             item.title = medias["albums"][0]["genre"][0]
-                        except Exception:  # pylint: disable = W0718
-                            pass
+                        except (KeyError, IndexError, TypeError) as ex:
+                            _LOG.debug(
+                                "[%s] Album missing genre field: %s",
+                                self._device.device_config.address,
+                                ex,
+                            )
                     paging.count = medias.get("limits", {}).get("total", 0)
                     if self._back_support:
                         paging.count = paging.count + 1
@@ -1062,8 +1075,15 @@ class MediaBrowser:
                     )
                     return None
                 return item, paging
-        # pylint: disable = W0718
-        except Exception as ex:
+        except (
+            jsonrpc_base.jsonrpc.TransportError,
+            jsonrpc_base.jsonrpc.ProtocolError,
+            KeyError,
+            IndexError,
+            TypeError,
+            AttributeError,
+            ValueError,
+        ) as ex:
             _LOG.exception(
                 "[%s] Error while browsing media %s,%s : %s",
                 self._device.device_config.address,

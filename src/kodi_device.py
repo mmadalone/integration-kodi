@@ -9,6 +9,7 @@ import asyncio
 import base64
 import datetime
 import logging
+import random
 import re
 import time
 import urllib.parse
@@ -369,12 +370,11 @@ class KodiDevice(IKodiDevice):
 
     async def init_connection(self):
         """Initialize connection to device."""
-        # pylint: disable = W0718
         if self._kodi_connection:
             try:
                 await self._kodi_connection.close()
-            except Exception:
-                pass
+            except (OSError, TransportError) as ex:
+                _LOG.debug("[%s] Error closing existing connection: %s", self._device_config.address, ex)
             finally:
                 self._kodi_connection = None
         if self._session:  # and not self._session.closed:
@@ -609,9 +609,8 @@ class KodiDevice(IKodiDevice):
         if close:
             try:
                 await self._kodi_connection.close()
-            # pylint: disable = W0718
-            except Exception:
-                pass
+            except (OSError, TransportError, AttributeError) as ex:
+                _LOG.debug("[%s] Error closing connection during clear: %s", self.device_config.address, ex)
 
     async def _ping(self):
         """Send websocket ping."""
@@ -622,9 +621,8 @@ class KodiDevice(IKodiDevice):
                 self._connect_error = True
                 _LOG.warning("[%s] Unable to ping Kodi via websocket", self.device_config.address)
             await self._clear_connection()
-        # pylint: disable = W0718
-        except Exception as ex:
-            _LOG.error("[%s] Unknown exception ping %s", self.device_config.address, ex)
+        except (OSError, ProtocolError) as ex:
+            _LOG.warning("[%s] Ping error %s", self.device_config.address, ex)
         else:
             self._connect_error = False
 
@@ -673,14 +671,17 @@ class KodiDevice(IKodiDevice):
     async def start_watchdog(self):
         """Start websocket watchdog."""
         while True:
+            # Jitter the reconnect cadence by +/-25% so fleet restarts don't synchronize
+            # thundering-herd traffic against a single Kodi instance.
+            jitter = random.uniform(0.75, 1.25)
             if (
                 self._kodi_connection is not None
                 and not self._kodi_connection.connected
                 and self._reconnect_retry >= 20
             ):
-                await asyncio.sleep(WEBSOCKET_WATCHDOG_INTERVAL * 3)
+                await asyncio.sleep(WEBSOCKET_WATCHDOG_INTERVAL * 3 * jitter)
             else:
-                await asyncio.sleep(WEBSOCKET_WATCHDOG_INTERVAL)
+                await asyncio.sleep(WEBSOCKET_WATCHDOG_INTERVAL * jitter)
             try:
                 if not await self._ping_and_reconnect():
                     _LOG.debug("[%s] Stop watchdog", self.device_config.address)
@@ -736,8 +737,7 @@ class KodiDevice(IKodiDevice):
                 if len(ex.args) > 1 and isinstance(ex.args[1], ClientOSError):
                     _LOG.warning("[%s] OS error, waiting %ss", self.device_config.address, ERROR_OS_WAIT)
                     await asyncio.sleep(ERROR_OS_WAIT)
-            # pylint: disable = W0718
-            except Exception:
+            except (IndexError, AttributeError):
                 pass
 
             if not self._connection_status or self._connection_status.done():
@@ -816,8 +816,7 @@ class KodiDevice(IKodiDevice):
         if self._chapter_update_task:
             try:
                 self._chapter_update_task.cancel()
-            # pylint: disable = W0718
-            except Exception:
+            except (RuntimeError, AttributeError):
                 pass
             self._chapter_update_task = None
 
@@ -836,8 +835,7 @@ class KodiDevice(IKodiDevice):
         if self._chapter_update_task:
             try:
                 self._chapter_update_task.cancel()
-            # pylint: disable = W0718
-            except Exception:
+            except (RuntimeError, AttributeError):
                 pass
             self._chapter_update_task = None
         self._chapter_update_task = asyncio.create_task(self._update_chapter_task())
@@ -1171,10 +1169,8 @@ class KodiDevice(IKodiDevice):
                                     "[%s] Found chapter name to display %s", self.device_config.address, current_chapter
                                 )
                                 await self.display_temporary_title(current_chapter)
-                    # pylint: disable = W0718
-                    except Exception:
-                        pass
-                        # _LOG.debug("[%s] Could not extract chapters %s", self.device_config.address, ex)
+                    except (KeyError, IndexError, TypeError, ValueError) as ex:
+                        _LOG.debug("[%s] Could not extract chapters: %s", self.device_config.address, ex)
 
                     if self._temporary_title:
                         updated_data[MediaAttr.MEDIA_TITLE] = self._temporary_title
@@ -1202,8 +1198,7 @@ class KodiDevice(IKodiDevice):
                     if self._chapter_update_task:
                         try:
                             self._chapter_update_task.cancel()
-                        # pylint: disable = W0718
-                        except Exception:
+                        except (RuntimeError, AttributeError):
                             pass
                         self._chapter_update_task = None
 
@@ -1791,8 +1786,8 @@ class KodiDevice(IKodiDevice):
         try:
             self._players = await self._kodi.get_players()
             await self._kodi.call_method("Player.PlayPause", **{"playerid": self.player_id})
-        # pylint: disable = W0718
-        except Exception:
+        except (TransportError, ProtocolError, CannotConnectError, ServerTimeoutError, OSError) as ex:
+            _LOG.debug("[%s] PlayPause failed, falling back to play/pause: %s", self.device_config.address, ex)
             if self._properties.get("speed", 0) == 0:
                 await self.async_media_play()
             else:
@@ -2040,8 +2035,8 @@ class KodiDevice(IKodiDevice):
             language = (await self._kodi.get_application_properties(["language"]))["language"]
             _LOG.debug("[%s] Kodi language : %s", self.device_config.address, language)
             return language
-        # pylint: disable = W0718
-        except Exception:
+        except (TransportError, ProtocolError, KeyError, TypeError) as ex:
+            _LOG.debug("[%s] Could not retrieve app language: %s", self.device_config.address, ex)
             return None
 
     async def update_app_language(self):

@@ -76,7 +76,7 @@ class KodiConfigDevice:
 
     # pylint: disable=R0801
     def __post_init__(self):
-        """Apply default values on missing fields."""
+        """Apply default values on missing fields and validate critical fields."""
         for attribute in fields(self):
             # If there is a default and the value of the field is none we can assign a value
             if (
@@ -84,6 +84,59 @@ class KodiConfigDevice:
                 and getattr(self, attribute.name) is None
             ):
                 setattr(self, attribute.name, attribute.default)
+
+        # Coerce string booleans coming from legacy configs ("true"/"false")
+        _bool_fields = (
+            "ssl",
+            "media_update_task",
+            "download_artwork",
+            "disable_keyboard_map",
+            "suppress_volume_overlay",
+            "show_stream_name",
+            "show_stream_language_name",
+            "sensor_include_device_name",
+            "log_additional_data",
+        )
+        for name in _bool_fields:
+            value = getattr(self, name)
+            if isinstance(value, str):
+                setattr(self, name, value.strip().lower() == "true")
+            elif not isinstance(value, bool):
+                setattr(self, name, bool(value))
+
+        # Coerce integer-typed fields that may arrive as strings from setup flow
+        for name in ("sensor_audio_stream_config", "sensor_subtitle_stream_config"):
+            value = getattr(self, name)
+            try:
+                setattr(self, name, int(value))
+            except (TypeError, ValueError) as ex:
+                raise ValueError(f"{name!r} must be an integer, got {value!r}") from ex
+
+        # Validate identity fields
+        for name in ("id", "name", "address"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name!r} must be a non-empty string, got {value!r}")
+
+        # Validate port (always required, HTTP JSON-RPC)
+        self.port = self._validate_port("port", self.port, allow_none=False)
+        # ws_port may be None for HTTP-only mode
+        self.ws_port = self._validate_port("ws_port", self.ws_port, allow_none=True)
+
+    @staticmethod
+    def _validate_port(name: str, value, *, allow_none: bool) -> str | None:
+        """Validate a port number; return it as a string (the dataclass field type)."""
+        if value is None or value == "":
+            if allow_none:
+                return None
+            raise ValueError(f"{name!r} is required")
+        try:
+            port_int = int(value)
+        except (TypeError, ValueError) as ex:
+            raise ValueError(f"{name!r} must be an integer, got {value!r}") from ex
+        if not 1 <= port_int <= 65535:
+            raise ValueError(f"{name!r} must be between 1 and 65535, got {port_int}")
+        return str(port_int)
 
     def get_device_part(self) -> str:
         """Return the device name part to build entity names."""
@@ -268,8 +321,7 @@ class Devices:
             with open(self._cfg_file_path, "w+", encoding="utf-8") as f:
                 json.dump(self._config, f, ensure_ascii=False, cls=_EnhancedJSONEncoder)
             return result
-        # pylint: disable = W0718
-        except Exception as ex:
+        except (OSError, ValueError, TypeError, KeyError) as ex:
             result = ConfigImportResult.ERROR
             _LOG.error(
                 "Cannot import the updated configuration %s, keeping existing configuration : %s", updated_config, ex
@@ -278,9 +330,8 @@ class Devices:
                 # Restore current configuration
                 self._config = config_backup
                 self.store()
-            # pylint: disable = W0718
-            except Exception:
-                pass
+            except OSError as restore_ex:
+                _LOG.error("Failed to restore previous configuration after import error: %s", restore_ex)
         return result
 
     def load(self) -> bool:
@@ -294,12 +345,12 @@ class Devices:
             for item in data:
                 try:
                     self._config.append(KodiConfigDevice(**item))
-                except TypeError as ex:
+                except (TypeError, ValueError) as ex:
                     _LOG.warning("Invalid configuration entry will be ignored: %s", ex)
             return True
         except OSError:
             _LOG.error("Cannot open the config file")
-        except ValueError:
+        except json.JSONDecodeError:
             _LOG.error("Empty or invalid config file")
 
         return False
