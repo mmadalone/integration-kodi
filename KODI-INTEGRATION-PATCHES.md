@@ -377,6 +377,42 @@ First click worked because `changed_media=False` (media title hadn't changed yet
 
 ---
 
+## Patch 23: `on_property_changed` filter uses `any()` not `all()`
+
+**Files:** `src/kodi_device.py`
+
+**Problem:** User reported subtitle/audio state changes on Kodi (via keyboard, voice, or another client) sometimes never reflected on the Remote, and when they did there was noticeable lag. The `on_property_changed` WebSocket handler was dropping events silently:
+
+```python
+if all(
+    x in ["currentaudiostream", "currentsubtitle", "subtitleenabled", "currentvideostream"]
+    for x in data.get("property", {}).keys()
+):
+    ...
+```
+
+`all()` requires **every** key in the event to be in the whitelist. Kodi frequently bundles multiple properties in a single `OnPropertyChanged` notification — e.g. `{"property": {"currentsubtitle": {...}, "speed": 1}}`. Any such bundled event was silently dropped because `speed` isn't in the whitelist.
+
+**Solution:** `any()` — if any key in the event is stream-related, trigger a state refresh. The inner `_update_states` already correctly handles events with extra keys. Also switched the whitelist to a set literal for O(1) membership tests.
+
+---
+
+## Patch 24: Periodic state-refresh safety net in the watchdog
+
+**Files:** `src/kodi_device.py`
+
+**Problem:** Even after patch 23, there are still cases where Kodi state changes without notifying the driver:
+
+- Kodi doesn't always emit `OnPropertyChanged` for keymap-style actions (e.g. `showsubtitles`, direct keyboard shortcuts, voice control from Kodi itself).
+- Another Kodi client (a second Remote, the Kodi Android app, the web UI) can mutate state without the driver seeing any event.
+- Occasional event loss under network pressure.
+
+The driver had **no periodic state refresh**. `start_watchdog` pinged every 10s (with ±25% jitter from patch 17) but only checked connectivity — it didn't refresh media/select state. So the Remote could drift arbitrarily far from Kodi's actual state until the user next triggered a command that forced a poll.
+
+**Solution:** On every successful watchdog tick while the websocket is connected, fire `asyncio.create_task(self._update_states(deferred=0))` as a fire-and-forget task. The existing `_update_lock` handles collision with command-triggered polls. Worst-case lag for an un-announced state change drops from "infinite" to ~12s (watchdog jitter upper bound). The extra traffic is cheap: `_update_states` only emits an `entity_change` event when something actually changed, so idle players generate no extra Remote traffic.
+
+---
+
 ## Companion Firmware Fixes (remote-ui)
 
 These fixes live in the main UC-Remote-UI project, not in this integration directory. They address [UC firmware bug #364](https://github.com/unfoldedcircle/feature-and-bug-tracker/issues/364) which affects all media player integrations.
