@@ -413,6 +413,30 @@ The driver had **no periodic state refresh**. `start_watchdog` pinged every 10s 
 
 ---
 
+## CI Hygiene (commit `63535d6`, on top of `.12`)
+
+Not a numbered behavioral patch — the `Check Python code formatting` GitHub Actions workflow (pylint / flake8 / isort / black) had been red on `v1.18.7-patched` since the `.4` cherry-pick (2026-04-12), and the `.5`, `.11`, `.12` commits inherited the red status. This commit lands all the lint debt in one pass so CI is green from `.12` onward. Zero behavioral change — the `.12` binary already installed on the Remote is unchanged.
+
+**Pylint fixes** (`src/kodi_device.py`):
+
+- `retry_call_command`: dropped the unused `bufferize: bool` parameter (dead since patch 10 removed the buffered-callback path). Both call sites in the `retry()` decorator updated.
+- `retry()` decorator inner except: dropped `TransportError` / `ProtocolError` / `ServerTimeoutError` from the fallback except (W0705 duplicate-except — already caught by the primary except above). Kept `OSError`.
+- `init_connection()` session close: narrowed from bare `except Exception` to `(OSError, TransportError, AttributeError)`.
+- `connect()` outer except: dropped duplicate `TransportError` / `CannotConnectError` (W0705), kept `(OSError, InvalidAuthError)`.
+- `connect()` finally block: `websocket_task.cancel()` except narrowed from `Exception` to `(RuntimeError, AttributeError)`.
+- `__init__` `suppress_volume_overlay` tuple wrapped over multiple lines (the one-liner was 121/120 chars). Added a `pylint: disable=duplicate-code` comment because R0801 flagged the wrapped block as structurally similar to the master feature list in `const.py`.
+- `power_off()` inner except: renamed `ex` to `inner_ex` to stop shadowing the outer except variable (W0621).
+
+**Formatter fixes:**
+
+- flake8 E305: second blank line added between `_log_task_exception` helper and `_KODI_MARKUP_RE` constant.
+- isort: `from kodi_device import _log_task_exception` in `src/driver.py` moved to the correct alphabetical slot in the `from ... import` block.
+- black: three multi-line expressions (watchdog `create_task`, `audio_changed` comparison, deferred-artwork `create_task`) collapsed onto single lines now that they fit under the 120-char limit.
+
+**Verification:** all four checks (pylint, flake8, isort, black `--target-version py311 --line-length 120`) run clean locally against the same `requirements.txt` the CI installs. GitHub Actions run `24341903111` confirms green on push.
+
+---
+
 ## Companion Firmware Fixes (remote-ui)
 
 These fixes live in the main UC-Remote-UI project, not in this integration directory. They address [UC firmware bug #364](https://github.com/unfoldedcircle/feature-and-bug-tracker/issues/364) which affects all media player integrations.
