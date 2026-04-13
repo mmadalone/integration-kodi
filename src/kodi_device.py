@@ -493,10 +493,13 @@ class KodiDevice(IKodiDevice):
     def on_property_changed(self, sender: str, data: dict[str, Any]):
         """Handle player property change."""
         _LOG.debug("[%s] Kodi property changed %s", self.device_config.address, data)
-        if all(
-            x in ["currentaudiostream", "currentsubtitle", "subtitleenabled", "currentvideostream"]
-            for x in data.get("property", {}).keys()
-        ):
+        # Trigger a state refresh if ANY key in the event is stream-related.
+        # Kodi often bundles multiple properties in a single OnPropertyChanged event
+        # (e.g. {currentsubtitle, speed}). The previous `all()` check required EVERY
+        # key to be in the whitelist, so any event that mixed a stream change with an
+        # unrelated key was silently dropped — causing stale select widgets.
+        stream_keys = {"currentaudiostream", "currentsubtitle", "subtitleenabled", "currentvideostream"}
+        if any(x in stream_keys for x in data.get("property", {}).keys()):
             self.event_loop.create_task(self._update_streams(data)).add_done_callback(_log_task_exception)
 
     def _get_language(self, info: dict[str, Any], language_first: bool) -> str:
@@ -670,7 +673,17 @@ class KodiDevice(IKodiDevice):
         _LOG.error(f"[%s] Websocket task failed, msg={message}, exception={exception}", self.device_config.address)
 
     async def start_watchdog(self):
-        """Start websocket watchdog."""
+        """Start websocket watchdog.
+
+        Also acts as a periodic state-refresh safety net: on every successful
+        watchdog tick while connected, fire a background _update_states() to
+        reconcile with Kodi. This guards against OnPropertyChanged events that
+        the driver never sees — e.g. Kodi doesn't emit events for every keymap
+        action (showsubtitles, etc), and direct-Kodi interactions (keyboard,
+        voice, another client) can mutate state without ever going through
+        the driver. Without this poll, the Remote widget can drift arbitrarily
+        far from Kodi's actual state until the user triggers a command.
+        """
         while True:
             # Jitter the reconnect cadence by +/-25% so fleet restarts don't synchronize
             # thundering-herd traffic against a single Kodi instance.
@@ -688,6 +701,13 @@ class KodiDevice(IKodiDevice):
                     _LOG.debug("[%s] Stop watchdog", self.device_config.address)
                     self._websocket_task = None
                     break
+                # Periodic state refresh safety net. Fire-and-forget so the
+                # watchdog loop keeps its cadence; _update_states() has its
+                # own lock with UPDATE_LOCK_TIMEOUT that handles concurrency.
+                if self._kodi_connection is not None and self._kodi_connection.connected:
+                    asyncio.create_task(self._update_states(deferred=0)).add_done_callback(
+                        _log_task_exception
+                    )
             except (OSError, TransportError) as ex:
                 _LOG.error("[%s] Watchdog exception %s", self.device_config.address, ex)
                 await asyncio.sleep(5)
