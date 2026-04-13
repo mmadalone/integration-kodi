@@ -17,7 +17,6 @@ import ucapi
 
 import config
 import kodi_device
-from kodi_device import _log_task_exception
 import media_player
 import remote
 import selector
@@ -25,6 +24,7 @@ import sensor
 import setup_flow
 from config import KodiEntity
 from const import filter_attributes
+from kodi_device import _log_task_exception
 
 _LOG = logging.getLogger("driver")  # avoid having __main__ in log messages
 if sys.platform == "win32":
