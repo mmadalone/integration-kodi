@@ -80,6 +80,7 @@ def _log_task_exception(task: asyncio.Task) -> None:
     if not task.cancelled() and task.exception():
         _LOG.error("Unhandled exception in background task: %s", task.exception())
 
+
 # Regex for stripping Kodi label formatting tags: [COLOR name], [/COLOR], [B], [I], [CR], etc.
 # Reference: https://kodi.wiki/view/Label_Formatting
 _KODI_MARKUP_RE = re.compile(
@@ -221,7 +222,6 @@ def debounce(wait: float):
 
 async def retry_call_command(
     timeout: float,
-    bufferize: bool,
     func: Callable[Concatenate[_KodiDeviceT, _P], Awaitable[_R]],
     obj: _KodiDeviceT,
     *args: _P.args,
@@ -270,7 +270,7 @@ def retry(*, timeout: float = 5) -> Callable[
                 if obj._kodi_connection and obj._kodi_connection.connected:
                     await func(obj, *args, **kwargs)
                     return ucapi.StatusCodes.OK
-                return await retry_call_command(timeout, False, func, obj, *args, **kwargs)
+                return await retry_call_command(timeout, func, obj, *args, **kwargs)
             except (TransportError, ProtocolError, ServerTimeoutError) as ex:
                 if obj.state == MediaStates.OFF:
                     log_function = _LOG.debug
@@ -284,7 +284,7 @@ def retry(*, timeout: float = 5) -> Callable[
                     ex,
                 )
                 try:
-                    return await retry_call_command(timeout, False, func, obj, *args, **kwargs)
+                    return await retry_call_command(timeout, func, obj, *args, **kwargs)
                 except (TransportError, ProtocolError, ServerTimeoutError) as ex2:
                     log_function(
                         "[%s] Error calling %s on (%s): %r",
@@ -294,7 +294,7 @@ def retry(*, timeout: float = 5) -> Callable[
                         ex2,
                     )
                     return ucapi.StatusCodes.BAD_REQUEST
-            except (TransportError, ProtocolError, ServerTimeoutError, OSError) as ex:
+            except OSError as ex:
                 _LOG.error("[%s] Unknown error %s %s", obj.device_config.address, func.__name__, ex)
                 return ucapi.StatusCodes.BAD_REQUEST
 
@@ -326,7 +326,14 @@ class KodiDevice(IKodiDevice):
         self._kodi: Kodi | None = None
         self._supported_features = list(KODI_FEATURES)
         if device_config.suppress_volume_overlay:
-            for feat in (Features.VOLUME, Features.VOLUME_UP_DOWN, Features.MUTE_TOGGLE, Features.MUTE, Features.UNMUTE):
+            # pylint: disable=duplicate-code
+            for feat in (
+                Features.VOLUME,
+                Features.VOLUME_UP_DOWN,
+                Features.MUTE_TOGGLE,
+                Features.MUTE,
+                Features.UNMUTE,
+            ):
                 self._supported_features.remove(feat)
         self._players = None
         self._properties = {}
@@ -382,7 +389,7 @@ class KodiDevice(IKodiDevice):
         if self._session:  # and not self._session.closed:
             try:
                 await self._session.close()
-            except Exception as ex:
+            except (OSError, TransportError, AttributeError) as ex:
                 _LOG.warning("[%s] Error closing session : %s", self._device_config.address, ex)
             self._session = None
         # timeout=ClientTimeout(
@@ -706,9 +713,7 @@ class KodiDevice(IKodiDevice):
                 # watchdog loop keeps its cadence; _update_states() has its
                 # own lock with UPDATE_LOCK_TIMEOUT that handles concurrency.
                 if self._kodi_connection is not None and self._kodi_connection.connected:
-                    asyncio.create_task(self._update_states(deferred=0)).add_done_callback(
-                        _log_task_exception
-                    )
+                    asyncio.create_task(self._update_states(deferred=0)).add_done_callback(_log_task_exception)
             except (OSError, TransportError) as ex:
                 _LOG.error("[%s] Watchdog exception %s", self.device_config.address, ex)
                 await asyncio.sleep(5)
@@ -770,7 +775,7 @@ class KodiDevice(IKodiDevice):
                 # , ex, stack_info=True, exc_info=True)
             await self._clear_connection(False)
             return False
-        except (OSError, TransportError, CannotConnectError, InvalidAuthError) as ex:
+        except (OSError, InvalidAuthError) as ex:
             _LOG.error("[%s] Connection error: %s", self.device_config.address, ex)
             return False
         finally:
@@ -780,7 +785,7 @@ class KodiDevice(IKodiDevice):
                 if self._websocket_task:
                     try:
                         self._websocket_task.cancel()
-                    except Exception as ex:
+                    except (RuntimeError, AttributeError) as ex:
                         _LOG.error("[%s] Failed to cancel websocket task %s", self.device_config.address, ex)
                     self._websocket_task = None
             elif self._websocket_task is None:
@@ -1269,9 +1274,7 @@ class KodiDevice(IKodiDevice):
                 audio_changed = (
                     new_audio_track
                     and self._audio_stream
-                    != new_audio_track.get_track_name(
-                        KodiStreamConfig(self._device_config.sensor_audio_stream_config)
-                    )
+                    != new_audio_track.get_track_name(KodiStreamConfig(self._device_config.sensor_audio_stream_config))
                 ) or (new_audio_track is None and self._audio_stream != "")
                 audio_options_changed = audio_options != self._last_pushed_audio_options
                 if audio_changed or audio_options_changed:
@@ -1327,9 +1330,7 @@ class KodiDevice(IKodiDevice):
                         media_title,
                         deferred,
                     )
-                    asyncio.create_task(self._update_states(deferred=deferred)).add_done_callback(
-                        _log_task_exception
-                    )
+                    asyncio.create_task(self._update_states(deferred=deferred)).add_done_callback(_log_task_exception)
 
             else:
                 self._reset_state([])
@@ -1913,8 +1914,8 @@ class KodiDevice(IKodiDevice):
             _LOG.info("[%s] Power off : client is already disconnected %s", self.device_config.address, ex)
             try:
                 await self.event_loop.create_task(self._update_states())
-            except (OSError, TransportError) as ex:
-                _LOG.warning("[%s] Post power-off state update failed: %s", self.device_config.address, ex)
+            except (OSError, TransportError) as inner_ex:
+                _LOG.warning("[%s] Post power-off state update failed: %s", self.device_config.address, inner_ex)
 
     @retry()
     async def command_button(self, button: ButtonKeymap):
