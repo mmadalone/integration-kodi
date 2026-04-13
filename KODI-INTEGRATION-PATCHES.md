@@ -325,6 +325,58 @@ Upstream never hit this because their manual test didn't subscribe-after-play �
 
 ---
 
+## Patch 20: Select Entity Push Robustness
+
+**Files:** `src/kodi_device.py`
+
+**Problem:** After patch 19 the Remote could *open* the select widget and see options, but after the initial `_update_states` poll the select state was not kept current. Two stacked issues:
+
+1. `_update_states()` only pushed the `OPTIONS` list inside `if changed_media:`, so the options were sent exactly once per title change. If the Remote subscribed after that moment, it never saw the options at all. The change-detection branches for audio/subtitle tracks pushed only `{CURRENT_OPTION}` — no `OPTIONS`.
+2. `select_audio_track()` / `select_subtitle_track()` sent the Kodi command and returned, trusting that Kodi would fire `OnPropertyChanged`. Kodi does not consistently fire that event for keymap-style actions like `showsubtitles` (the toggle the driver uses when the user picks "Disabled"). The driver never noticed the state change, never pushed a new `CURRENT_OPTION`, and the Remote widget stayed on the old selection.
+
+**Solution (20a — full snapshot push):** Precompute `audio_options` and `subtitle_options` lists unconditionally at the top of the audio/subtitle block. Track the last pushed list in `self._last_pushed_audio_options` / `self._last_pushed_subtitle_options` (reset in `__init__` and `_reset_state()`). Always push a full snapshot `{OPTIONS, CURRENT_OPTION}` when either the current value or the options list changes. This fixed the "options empty at subscribe" failure mode.
+
+**Solution (20b — post-command refresh):** At the end of `select_audio_track()` and `select_subtitle_track()`, fire `asyncio.create_task(self._update_states(deferred=0)).add_done_callback(_log_task_exception)`. The explicit poll guarantees the driver re-reads state from Kodi immediately after the command, regardless of whether Kodi emits `OnPropertyChanged`. The task is fire-and-forget so the command handler can return promptly.
+
+---
+
+## Patch 21: Gate OPTIONS Push on Actual List Change (avoid Qt ListView reset)
+
+**Files:** `src/kodi_device.py`
+
+**Problem:** After patch 20, track-switching introduced a new regression: the very first click updated the Remote widget correctly, then subsequent clicks caused Kodi to change but left the Remote widget stale. Root cause was a latent Qt/QML bug in the Remote firmware's `Select.qml` (shared with upstream `unfoldedcircle/remote-ui`):
+
+- The Remote UI's `EntityController.cpp` iterates incoming attribute updates via `QVariantMap`, which orders keys alphabetically.
+- For a Select entity, `"current_option"` is processed *before* `"options"`.
+- QML's `Select.qml` has a `Connections { onCurrentOptionChanged: selectCurrent() }` handler but **no** `onOptionsChanged` handler.
+- On a bundled `{OPTIONS, CURRENT_OPTION}` update, QML runs `selectCurrent()` against the still-old options list, then the options list is reassigned on the ListView. Reassigning `ListView.model` **resets `currentIndex`**, and `selectCurrent()` never re-runs. The widget loses its highlight.
+
+`.3` happened to avoid this because its mid-playback selection-change push sent `{CURRENT_OPTION}` alone (no `OPTIONS`), which never triggered the `ListView.model` reassignment at all.
+
+**Solution:** Restore `.3`'s wire shape. In the audio and subtitle select-push blocks, only include the `OPTIONS` key in the emitted dict **when the options list has actually changed** (compared via `_last_pushed_audio_options` / `_last_pushed_subtitle_options`). Ordinary selection changes now push `{CURRENT_OPTION}` alone and never cause the Qt `ListView.model` reset. The options list is still pushed on the first poll after connect (trackers start as `None`) and any time Kodi gains or loses a stream mid-playback.
+
+The UC-Remote-UI `Select.qml` bug is still a real bug and a good candidate for a PR upstream, but this driver-side fix works around it completely without needing a custom UI rebuild.
+
+---
+
+## Patch 22: Widen Chapter-Fetch Except for Kodi <22 Compatibility
+
+**Files:** `src/kodi_device.py`
+
+**Problem:** After patch 21, select widgets worked for the *first* track change after activity start, then stopped updating. Live log trace from the device showed `_update_states()` crashing with a JSON-RPC error:
+
+```
+WARNING:kodi_device: Update states error: (-32601, 'Method not found.', ...)
+```
+
+`Player.GetChapters` is a **Kodi 22+** JSON-RPC method. Older Kodi versions raise `ProtocolError(-32601, "Method not found")`. The chapter-fetch try/except in `_update_states` only caught `(KeyError, IndexError, TypeError, ValueError)` — the `ProtocolError` escaped to the outer `_update_states` handler and aborted the entire poll **before the subtitle/audio push code ran**. No `entity_change` event was emitted for that call.
+
+First click worked because `changed_media=False` (media title hadn't changed yet), so `get_chapters()` was not called. Second click worked if the title had changed in between, which triggered `changed_media=True` and the doomed `get_chapters()` path.
+
+**Solution:** Widen the chapter-fetch except clause to also catch `(TransportError, ProtocolError)`, logging at debug with a hint that `Player.GetChapters` is Kodi 22+. The failure is now isolated — `_update_states` completes normally and the subtitle/audio push runs.
+
+---
+
 ## Companion Firmware Fixes (remote-ui)
 
 These fixes live in the main UC-Remote-UI project, not in this integration directory. They address [UC firmware bug #364](https://github.com/unfoldedcircle/feature-and-bug-tracker/issues/364) which affects all media player integrations.
