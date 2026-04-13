@@ -364,6 +364,8 @@ class KodiDevice(IKodiDevice):
         self._current_chapter: str | None = None
         self._audio_stream: str = ""
         self._subtitle_stream = ""
+        self._last_pushed_audio_options: list[str] | None = None
+        self._last_pushed_subtitle_options: list[str] | None = None
         self._app_language: str | None = None
         self._chapter_update_task: Task | None = None
         self._media_browser = media_browser.MediaBrowser(self)
@@ -813,6 +815,8 @@ class KodiDevice(IKodiDevice):
         self._current_chapter = None
         self._audio_stream = ""
         self._subtitle_stream = ""
+        self._last_pushed_audio_options = None
+        self._last_pushed_subtitle_options = None
         if self._chapter_update_task:
             try:
                 self._chapter_update_task.cancel()
@@ -1152,6 +1156,10 @@ class KodiDevice(IKodiDevice):
                     await self._reset_media_artwork()
 
                 # If media changed, update chapters list (Kodi >=22)
+                # Player.GetChapters is a Kodi 22+ method — older Kodi versions raise
+                # ProtocolError -32601 "Method not found". We must catch that here,
+                # otherwise it escapes to the outer _update_states handler and aborts
+                # the entire poll before the subtitle/audio/etc updates are emitted.
                 current_chapter = self.current_chapter
                 if changed_media:
                     self._chapters = None
@@ -1171,6 +1179,12 @@ class KodiDevice(IKodiDevice):
                                 await self.display_temporary_title(current_chapter)
                     except (KeyError, IndexError, TypeError, ValueError) as ex:
                         _LOG.debug("[%s] Could not extract chapters: %s", self.device_config.address, ex)
+                    except (TransportError, ProtocolError) as ex:
+                        _LOG.debug(
+                            "[%s] Kodi does not support Player.GetChapters (Kodi <22?): %s",
+                            self.device_config.address,
+                            ex,
+                        )
 
                     if self._temporary_title:
                         updated_data[MediaAttr.MEDIA_TITLE] = self._temporary_title
@@ -1216,32 +1230,62 @@ class KodiDevice(IKodiDevice):
                 if self.state == MediaStates.PLAYING and len(self.chapters) > 0 and self._chapter_update_task is None:
                     await self.update_chapter_task()
 
+                # Precompute the OPTIONS lists. We push OPTIONS only when the list
+                # itself changed (first poll after connect, or Kodi gained/lost a track)
+                # — ordinary CURRENT_OPTION changes push CURRENT_OPTION alone, matching
+                # the pre-.4 wire shape. This avoids a latent Qt/QML bug in the Remote's
+                # Select.qml where reassigning ListView.model on every update resets
+                # currentIndex and the widget shows a stale highlight.
+                audio_options = [
+                    x.get_track_name(KodiStreamConfig(self._device_config.sensor_audio_stream_config))
+                    for x in self.audio_tracks
+                ]
+                subtitle_options = [
+                    x.get_track_name(KodiStreamConfig(self._device_config.sensor_subtitle_stream_config))
+                    for x in self.subtitle_tracks
+                ]
+
                 new_audio_track = self.current_audio_track
-                if (
+                audio_changed = (
                     new_audio_track
                     and self._audio_stream
-                    != new_audio_track.get_track_name(KodiStreamConfig(self._device_config.sensor_audio_stream_config))
-                ) or (new_audio_track is None and self._audio_stream != ""):
-                    self._audio_stream = (
-                        new_audio_track.get_track_name(KodiStreamConfig(self._device_config.sensor_audio_stream_config))
-                        if new_audio_track
-                        else ""
+                    != new_audio_track.get_track_name(
+                        KodiStreamConfig(self._device_config.sensor_audio_stream_config)
                     )
-                    updated_data[MediaAttr.SOUND_MODE] = self._audio_stream
-                    updated_data[KodiSensors.SENSOR_AUDIO_STREAM] = self.sensor_audio_stream
+                ) or (new_audio_track is None and self._audio_stream != "")
+                audio_options_changed = audio_options != self._last_pushed_audio_options
+                if audio_changed or audio_options_changed:
+                    if audio_changed:
+                        self._audio_stream = (
+                            new_audio_track.get_track_name(
+                                KodiStreamConfig(self._device_config.sensor_audio_stream_config)
+                            )
+                            if new_audio_track
+                            else ""
+                        )
+                        updated_data[MediaAttr.SOUND_MODE] = self._audio_stream
+                        updated_data[KodiSensors.SENSOR_AUDIO_STREAM] = self.sensor_audio_stream
                     select_info = updated_data.get(KodiSelects.SELECT_AUDIO_STREAM, {})
                     select_info[SelectAttributes.CURRENT_OPTION] = self.selector_audio_stream
+                    if audio_options_changed:
+                        select_info[SelectAttributes.OPTIONS] = audio_options
+                        self._last_pushed_audio_options = audio_options
                     updated_data[KodiSelects.SELECT_AUDIO_STREAM] = select_info
 
-                if self._subtitle_stream != self.current_subtitle_track.get_track_name(
+                new_subtitle_stream = self.current_subtitle_track.get_track_name(
                     KodiStreamConfig(self._device_config.sensor_subtitle_stream_config)
-                ):
-                    self._subtitle_stream = self.current_subtitle_track.get_track_name(
-                        KodiStreamConfig(self._device_config.sensor_subtitle_stream_config)
-                    )
-                    updated_data[KodiSensors.SENSOR_SUBTITLE_STREAM] = self.sensor_subtitle_stream
+                )
+                subtitle_changed = self._subtitle_stream != new_subtitle_stream
+                subtitle_options_changed = subtitle_options != self._last_pushed_subtitle_options
+                if subtitle_changed or subtitle_options_changed:
+                    if subtitle_changed:
+                        self._subtitle_stream = new_subtitle_stream
+                        updated_data[KodiSensors.SENSOR_SUBTITLE_STREAM] = self.sensor_subtitle_stream
                     select_info = updated_data.get(KodiSelects.SELECT_SUBTITLE_STREAM, {})
                     select_info[SelectAttributes.CURRENT_OPTION] = self.selector_subtitle_stream
+                    if subtitle_options_changed:
+                        select_info[SelectAttributes.OPTIONS] = subtitle_options
+                        self._last_pushed_subtitle_options = subtitle_options
                     updated_data[KodiSelects.SELECT_SUBTITLE_STREAM] = select_info
 
                 current_state = self._attr_state
@@ -1916,6 +1960,9 @@ class KodiDevice(IKodiDevice):
             ):
                 _LOG.debug("[%s] Switch audio track to %s (%s)", self.device_config.address, track_name, track.index)
                 await self._kodi.set_audio_stream(track.index)
+                # Kodi doesn't always fire OnPropertyChanged for stream switches, so poll
+                # fresh state ourselves and push the new CURRENT_OPTION to the Remote.
+                asyncio.create_task(self._update_states(deferred=0)).add_done_callback(_log_task_exception)
                 return
         _LOG.warning("[%s] Switch audio track to %s : not found", self.device_config.address, track_name)
 
@@ -1939,6 +1986,10 @@ class KodiDevice(IKodiDevice):
                         "[%s] Switch subtitle track to %s (%s)", self.device_config.address, track_name, track.index
                     )
                     await self._kodi.set_subtitle_stream(track.index)
+                # Kodi doesn't always fire OnPropertyChanged for stream switches
+                # (especially the showsubtitles toggle), so poll fresh state ourselves
+                # and push the new CURRENT_OPTION to the Remote.
+                asyncio.create_task(self._update_states(deferred=0)).add_done_callback(_log_task_exception)
                 return
         _LOG.warning("[%s] Switch subtitle track to %s : not found", self.device_config.address, track_name)
 
