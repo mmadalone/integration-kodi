@@ -106,3 +106,8 @@ dist/
 build/
 *.spec
 *.tar.gz
+
+# Personal Windows-local Claude Code directives
+CLAUDE.md
+.claude-memory/
+.claude/
