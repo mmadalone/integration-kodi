@@ -2,7 +2,7 @@
 
 ## Base Version
 
-Built from tag `v1.18.7` of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) on branch `v1.18.7-patched`.
+Built from tag `v1.18.13` of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) on branch `v1.18.13-patched`. Rebased from the prior `v1.18.7-patched` base on 2026-04-22 — see "Upstream Rebase to v1.18.13" section below.
 
 **Builder image:** `docker.io/unfoldedcircle/r2-pyinstaller:3.11.13-0.4.0`
 **Build command:** `pyinstaller --collect-submodules zeroconf --clean -y --onedir --name driver src/driver.py`
@@ -434,6 +434,49 @@ Not a numbered behavioral patch — the `Check Python code formatting` GitHub Ac
 - black: three multi-line expressions (watchdog `create_task`, `audio_changed` comparison, deferred-artwork `create_task`) collapsed onto single lines now that they fit under the 120-char limit.
 
 **Verification:** all four checks (pylint, flake8, isort, black `--target-version py311 --line-length 120`) run clean locally against the same `requirements.txt` the CI installs. GitHub Actions run `24341903111` confirms green on push.
+
+---
+
+## Upstream Rebase to v1.18.13 (2026-04-22)
+
+Rebased `v1.18.7-patched` onto upstream `main` at tag `v1.18.13` — 6 unique upstream commits picked up (the 7th, `0589714 Fixed warnings…`, was already cherry-picked into our chain as `c647d97` and dropped here as a duplicate).
+
+**Upstream changes pulled in:**
+- `9cf5b1c` Fixed media search
+- `9fbf60f` Small fixes on search media and refactoring (adds search filter categories — large `media_browser.py` rewrite)
+- `0d60918` Fixed broken search with updated library
+- `4608950` Updated dependencies (ucapi 0.5.3-dev → 0.6.0, jsonrpc-async pin loosened to `>=`, `MediaContentType` import path moved from `ucapi.api_definitions` to `ucapi.media_player`)
+- `bf786b2` Updated ucapi (driver.json + requirements.txt)
+- `fae059f` updated ucapi (wheel removal)
+
+**Commits dropped during rebase (both no-ops post-rebase):**
+- `c647d97 Fixed warnings with unknown and initialization of entities attributes.` — duplicate of upstream `0589714`
+- `451b7d9 [fix] isort: alphabetize imports in setup_fields.py` — upstream now has the import sorted (single-line `from const import KODI_POWEROFF_COMMANDS, KodiObjectType`), our reorder is no longer needed
+
+**Dependency switch (Option A — adopted upstream's set):**
+- Removed local wheel `src/ucapi-0.5.3.dev12+gd11cfea3f.d20260321-py3-none-any.whl`
+- `requirements.txt` now matches upstream verbatim:
+  - `ucapi~=0.6.0` (from PyPI, no more local wheel)
+  - `httpx~=0.28.1` (new)
+  - `defusedxml~=0.7.1` (new)
+  - `jsonrpc-async>=2.1.3`, `jsonrpc-websocket>=3.2.0`, `jsonrpc_base>=2.2.0` (loosened from `~=`)
+  - `aiohttp~=3.13.5` (bumped from `~=3.13.3`)
+
+**ucapi 0.6.0 breaking-change audit:**
+1. `MediaType` → `MediaContentType` rename: we already used `MediaContentType` (from old `api_definitions` path); upstream commit `4608950` moves the import to `ucapi.media_player` and that change is inherited via the rebase.
+2. `(str, Enum)` → `StrEnum` for ucapi enums: only affects ucapi's own enums. Our local `class KodiMediaTypes(str, Enum)` in `const.py` is independent; no change required.
+3. Entity constructors require kwargs for optional fields: verified upstream v1.18.13 uses identical `super().__init__()` patterns to our patched files (required fields positional: `entity_id`, `name`, `features`, `attributes`; optional fields already kwarg-only: `device_class=`, `options=`, `simple_commands=`, `button_mapping=`, `ui_pages=`). No change required.
+
+**Conflict resolution during rebase:** 8 git conflicts, all trivially auto-resolved by taking upstream's side:
+- 6× `driver.json` (version-string bumps in our chore commits — final version set to `1.18.13-madalone.1` here)
+- 1× `requirements.txt` (the dep-set divergence above)
+- 1× iter-4 multi-file (`driver.json`, `src/const.py`, `src/media_player.py` — the duplicate-commit collision against upstream's `0589714`; equivalent change, upstream's wins)
+
+**Final patch chain:** 18 commits on top of upstream `main` (down from 20 on `v1.18.7-patched`).
+
+**Version:** `1.18.13-madalone.1` (resets the `madalone` suffix counter for the new base; previously `1.18.7-madalone.12`).
+
+**Branch policy:** `v1.18.7-patched` retained as a safety net (matches the binary currently installed on the Remote). New work lives on `v1.18.13-patched`.
 
 ---
 

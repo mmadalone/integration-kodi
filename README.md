@@ -1,6 +1,6 @@
 # Kodi Integration for Unfolded Circle Remote 3 (Patched Fork)
 
-Fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (v1.18.7) with bug fixes for title formatting, artwork loading, playback state, and power-off control.
+Fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (v1.18.13) with bug fixes for title formatting, artwork loading, playback state, and power-off control.
 
 All credit for the integration goes to [Albaintor](https://github.com/albaintor). This fork applies targeted patches only — no upstream logic has been altered.
 
