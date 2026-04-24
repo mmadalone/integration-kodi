@@ -292,6 +292,15 @@ def retry(*, timeout: float = 5) -> Callable[
                         obj._name,
                         ex2,
                     )
+                    # Narrow: only suppress Kodi application-level errors (ProtocolError),
+                    # not transport/timeout issues — those indicate real connectivity problems.
+                    if isinstance(ex2, ProtocolError) and obj._device_config.suppress_unsupported_command_errors:
+                        _LOG.debug(
+                            "[%s] Suppressing Kodi ProtocolError on %s per suppress_unsupported_command_errors",
+                            obj.device_config.address,
+                            func.__name__,
+                        )
+                        return ucapi.StatusCodes.OK
                     return ucapi.StatusCodes.BAD_REQUEST
             except OSError as ex:
                 _LOG.error("[%s] Unknown error %s %s", obj.device_config.address, func.__name__, ex)
@@ -324,16 +333,6 @@ class KodiDevice(IKodiDevice):
         self._kodi_connection: KodiWSConnection | None = None
         self._kodi: Kodi | None = None
         self._supported_features = list(KODI_FEATURES)
-        if device_config.suppress_volume_overlay:
-            # pylint: disable=duplicate-code
-            for feat in (
-                Features.VOLUME,
-                Features.VOLUME_UP_DOWN,
-                Features.MUTE_TOGGLE,
-                Features.MUTE,
-                Features.UNMUTE,
-            ):
-                self._supported_features.remove(feat)
         self._players = None
         self._properties = {}
         self._item = {}
@@ -367,6 +366,13 @@ class KodiDevice(IKodiDevice):
         self._update_state_retry = 0
         self._temporary_title: str | None = None
         self._chapters: list[dict[str, Any]] | None = None
+        if device_config.suppress_volume_overlay:
+            _LOG.warning(
+                "[%s] suppress_volume_overlay is deprecated: volume features are now advertised. "
+                "To hide the on-screen volume indicator, use UC Remote 3 Settings > UI > "
+                "Show volume indicator (requires remote-ui v1.4.2+).",
+                device_config.address,
+            )
         self._current_chapter: str | None = None
         self._audio_stream: str = ""
         self._subtitle_stream = ""
@@ -476,13 +482,11 @@ class KodiDevice(IKodiDevice):
         updated_data = {}
         if volume != int(self._app_properties["volume"]):
             self._volume = int(self._app_properties["volume"])
-            if not self._device_config.suppress_volume_overlay:
-                updated_data[MediaAttr.VOLUME] = self._volume
+            updated_data[MediaAttr.VOLUME] = self._volume
             updated_data[KodiSensors.SENSOR_VOLUME] = self._volume
         if muted != self._app_properties["muted"]:
             self._is_volume_muted = self._app_properties["muted"]
-            if not self._device_config.suppress_volume_overlay:
-                updated_data[MediaAttr.MUTED] = self._is_volume_muted
+            updated_data[MediaAttr.MUTED] = self._is_volume_muted
             updated_data[KodiSensors.SENSOR_VOLUME_MUTED] = self._is_volume_muted
         if updated_data:
             self.events.emit(Events.UPDATE, self.id, updated_data)
@@ -952,13 +956,11 @@ class KodiDevice(IKodiDevice):
                 volume = int(self._app_properties["volume"])
                 if self._volume != volume:
                     self._volume = volume
-                    if not self._device_config.suppress_volume_overlay:
-                        updated_data[MediaAttr.VOLUME] = self._volume
+                    updated_data[MediaAttr.VOLUME] = self._volume
                 muted = self._app_properties["muted"]
                 if muted != self._is_volume_muted:
                     self._is_volume_muted = muted
-                    if not self._device_config.suppress_volume_overlay:
-                        updated_data[MediaAttr.MUTED] = muted
+                    updated_data[MediaAttr.MUTED] = muted
 
                 if self._app_language is None:
                     self._app_language = await self.get_app_language()
@@ -1074,8 +1076,73 @@ class KodiDevice(IKodiDevice):
                 if thumbnail is None or thumbnail == "":
                     thumbnail = self._item.get("thumbnail", None)
 
+                # Patch 28: broader fallback for plugin/unscraped content. Netflix-style plugins
+                # populate only `art["icon"]` with a real thumbnail URL; unscraped library items
+                # return nothing usable via the configured `artwork_type`. Try alternate keys in
+                # visual-priority order before giving up. Preserves the user's preference (only
+                # runs if the configured type yielded nothing).
+                if thumbnail is None or thumbnail == "":
+                    for fallback_key in ("poster", "thumb", "landscape", "banner", "fanart", "clearart", "icon"):
+                        candidate = art.get(fallback_key)
+                        # Patch 29a: skip Kodi internal Default*.png placeholders — they resolve
+                        # to unreachable URIs and produce garbage data when fetched via HTTP.
+                        if candidate and not candidate.startswith("image://Default"):
+                            thumbnail = candidate
+                            _LOG.debug(
+                                "[%s] artwork fallback: using art[%r] for type=%s",
+                                self.device_config.address,
+                                fallback_key,
+                                self._item.get("type"),
+                            )
+                            break
+
                 if thumbnail == "":
                     thumbnail = None
+
+                # Patch 29a: also catch the case where the primary `artwork_type` resolution
+                # (or `self._item['thumbnail']`) produced a placeholder; treat as "no art".
+                if thumbnail and thumbnail.startswith("image://Default"):
+                    _LOG.debug(
+                        "[%s] discarding Kodi placeholder icon for type=%s: %s",
+                        self.device_config.address,
+                        self._item.get("type"),
+                        thumbnail,
+                    )
+                    thumbnail = None
+
+                # Patch 30: sidecar thumbnail recovery at play-time. Kodi's JSON-RPC doesn't
+                # associate sidecar files (Sonarr-style <base>-thumb.jpg, Kodi-native .tbn,
+                # folder-level poster.jpg) to the playing item — its own skin does that at
+                # browse time and primes item state before Player.Open. JSON-RPC-initiated
+                # plays (e.g. UC3 MediaBrowser) skip that. Here we replicate the skin's
+                # sidecar lookup by listing the parent folder once and running the same
+                # detection logic the browse path uses.
+                if thumbnail is None:
+                    _candidate_file = self._item.get("file", "") or ""
+                    _non_fs_prefixes = ("plugin://", "pvr://", "http://", "https://", "upnp://")
+                    if _candidate_file and "/" in _candidate_file and not _candidate_file.startswith(_non_fs_prefixes):
+                        try:
+                            _parent_dir = _candidate_file.rsplit("/", 1)[0] + "/"
+                            _dir_result = await self._kodi.call_method(
+                                "Files.GetDirectory", directory=_parent_dir, media="files"
+                            )
+                            _dir_files = (_dir_result or {}).get("files", []) if isinstance(_dir_result, dict) else []
+                            _sidecar = media_browser.find_sidecar_for_file(_candidate_file, _dir_files)
+                            if _sidecar:
+                                thumbnail = f"image://{urllib.parse.quote(_sidecar, safe='')}/"
+                                _LOG.debug(
+                                    "[%s] patch 30 sidecar resolved at play-time: %s -> %s",
+                                    self.device_config.address,
+                                    _candidate_file,
+                                    _sidecar,
+                                )
+                        except (TransportError, ProtocolError, OSError) as ex:
+                            _LOG.debug(
+                                "[%s] patch 30 sidecar lookup failed for %s: %s",
+                                self.device_config.address,
+                                _candidate_file,
+                                ex,
+                            )
 
                 if thumbnail != self._thumbnail:
                     self._thumbnail = thumbnail
@@ -1083,7 +1150,7 @@ class KodiDevice(IKodiDevice):
                     self._media_image_data = ""
                     # Not working with smb links.
                     # TODO extend this approach for other media types
-                    if self._item["type"] == "movie" and "@smb" in thumbnail:
+                    if self._item["type"] == "movie" and thumbnail and "@smb" in thumbnail:
                         try:
                             result = await self._kodi.call_method(
                                 "VideoLibrary.GetAvailableArt",
@@ -1102,19 +1169,35 @@ class KodiDevice(IKodiDevice):
                                 self._media_image_url,
                                 ex,
                             )
-                    if self._device_config.download_artwork:
+                    if self._device_config.download_artwork and self._media_image_url:
                         try:
                             async with ClientSession() as session:
                                 async with session.get(self._media_image_url, timeout=ARTWORK_TIMEOUT) as response:
-                                    buffer = b""
-                                    async for data, _ in response.content.iter_chunks():
-                                        buffer += data
-                                    self._media_image_data = (
-                                        "data:"
-                                        + response.content_type
-                                        + ";base64,"
-                                        + base64.b64encode(buffer).decode("utf-8")
-                                    )
+                                    # Patch 29b: discard non-200 responses. Kodi's webserver returns
+                                    # 404 + HTML "File not found" for unresolvable image:// URIs; that
+                                    # would otherwise be base64-encoded and shipped to the remote as
+                                    # a bogus data:... URI. Do NOT check Content-Type — Kodi omits the
+                                    # header entirely for real images (aiohttp then defaults it to
+                                    # application/octet-stream), so a content-type filter rejects
+                                    # every legitimate thumbnail.
+                                    if response.status != 200:
+                                        _LOG.debug(
+                                            "[%s] artwork fetch non-200 (status=%s url=%s), discarding",
+                                            self.device_config.address,
+                                            response.status,
+                                            self._media_image_url,
+                                        )
+                                        self._media_image_data = ""
+                                    else:
+                                        buffer = b""
+                                        async for data, _ in response.content.iter_chunks():
+                                            buffer += data
+                                        self._media_image_data = (
+                                            "data:"
+                                            + response.content_type
+                                            + ";base64,"
+                                            + base64.b64encode(buffer).decode("utf-8")
+                                        )
                         # pylint: disable = W0718
                         except Exception as ex:
                             _LOG.warning("[%s] Failed to download artwork : %s", self.device_config.address, ex)
@@ -1490,9 +1573,8 @@ class KodiDevice(IKodiDevice):
                 SelectAttributes.STATE: SelectStates.ON,
             },
         }
-        if not self._device_config.suppress_volume_overlay:
-            attributes[MediaAttr.VOLUME] = self.volume_level
-            attributes[MediaAttr.MUTED] = self.is_volume_muted
+        attributes[MediaAttr.VOLUME] = self.volume_level
+        attributes[MediaAttr.MUTED] = self.is_volume_muted
         return attributes
 
     @property
