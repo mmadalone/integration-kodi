@@ -105,6 +105,25 @@ Six patches focused on making UC3 MediaBrowser-initiated playback behave like Ko
 
 **Dropped pre-release:** `suppress_media_browser`, `suppress_shuffle`, `suppress_repeat` were drafted and then pulled after diagnosis showed integration-side feature removal doesn't propagate to already-subscribed UC3 entities. The UX for hiding those icons lives at the UC Remote 3 firmware layer instead (`Config.showMediaBrowserButton` / `showShuffleButton` / `showRepeatButton` in v1.4.2+). The three dataclass fields are retained in `KodiConfigDevice` as silent no-ops for backwards compat with pre-release `config.json` entries.
 
+### v1.18.13-madalone.3 (seven new simple commands)
+
+Seven new bindable entries in the UC3 Remote entity's simple-command picker — map each to any button via UC3's per-button mapping:
+
+- **`MODE_CONTEXT_MENU`** (patch 31) — unconditional `Input.ContextMenu` (always opens the context menu, bypass Kodi keymap).
+- **`MODE_PLAY_SELECTED`** (patch 32) — Kodi's context-sensitive `play` action. Plays the currently focused folder/item in the Kodi UI (matches Harmony PLAY button behavior).
+- **`MODE_KEYPRESS_C`** (patch 33) — simulates keyboard `c` via `Input.ButtonEvent`. Routes through Kodi's keymap so you get per-window context: `contextmenu` globally, `queue` in `<FullscreenVideo>`, whatever your custom keymap defines.
+- **`MODE_CODEC_INFO`** (patch 34) — toggles the codec-info overlay during playback.
+- **`MODE_PLAYER_DEBUG`** (patch 34) — toggles the player debug overlay (CPU/GPU/FPS/dropped frames).
+- **`MODE_SYSTEM_MENU`** (patch 34) — opens Kodi's shutdown menu (Exit / Power off / Reboot / Hibernate / Suspend / Custom shutdown timer / Minimize / Inhibit idle shutdown).
+- **`MODE_KEYPRESS_ESC`** (patch 35) — simulates keyboard Esc via `Input.ButtonEvent`. Context-aware through the keymap: close dialog / previous menu / stop / shutdown menu depending on the focused Kodi window.
+
+Underlying mechanism distinction:
+- `Input.ExecuteAction(...)` calls (used by most simple commands) — direct named action, bypass keymap.
+- `Input.ButtonEvent(...)` calls (patches 33, 35) — simulate a key/button press, route through `keymap.xml`, respect per-window overrides. Use these when you want physical-keyboard parity with a setup (e.g. Harmony remote configurations).
+
+Also in this release:
+- **`build.yml` workflow fixes** — removed the upstream Docker Hub publish job (fork has no counterpart namespace), added `permissions: contents: write` so the GitHub Release job can now auto-publish the tar.gz asset on tag push.
+
 ## Recommended Settings
 
 - **Download artwork:** Enabled — provides instant artwork on first entity open by pre-caching images as base64
@@ -158,7 +177,7 @@ These firmware changes live in the main [UC-Remote-UI](.) project, not in this i
 
 - **Original repo:** [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi)
 - **Base version:** v1.18.13 (branch `v1.18.13-patched`; rebased from `v1.18.7-patched` on 2026-04-22)
-- **Current tag:** `v1.18.13-madalone.2`
+- **Current tag:** `v1.18.13-madalone.3`
 - **License:** [MPL-2.0](LICENSE) (unchanged from upstream)
 
 ## Changed Files
@@ -166,7 +185,7 @@ These firmware changes live in the main [UC-Remote-UI](.) project, not in this i
 | File | Patches touching it |
 |------|---------------------|
 | `driver.json` | Version / metadata |
-| `src/const.py` | 5 (power-off dropdown), upstream rebase touches |
+| `src/const.py` | 5 (power-off dropdown), 31–35 (new simple commands: MODE_CONTEXT_MENU, MODE_PLAY_SELECTED, MODE_KEYPRESS_C, MODE_CODEC_INFO, MODE_PLAYER_DEBUG, MODE_SYSTEM_MENU, MODE_KEYPRESS_ESC), upstream rebase touches |
 | `src/kodi_device.py` | 1–4, 9, 11–13, 16, 17, 20–24, 26–30 (most patch activity) |
 | `src/media_player.py` | 7, 15, 16 |
 | `src/remote.py` | 8 |

@@ -7,7 +7,7 @@ Patched fork of [albaintor/integration-kodi](https://github.com/albaintor/integr
 **Owner:** madalone
 **Device:** UC Remote 3 at `192.168.2.204`, PIN `6984`
 **Upstream:** `albaintor/integration-kodi` tag `v1.18.13`
-**Current tag:** `v1.18.13-madalone.2` (branch `v1.18.13-patched`)
+**Current tag:** `v1.18.13-madalone.3` (branch `v1.18.13-patched`)
 **Language:** Python 3.11 (async/await, `ucapi` 0.6.0, `aiohttp`, Kodi JSON-RPC)
 **Build toolchain:** `docker.io/unfoldedcircle/r2-pyinstaller:3.11.13-0.4.0`
 
@@ -100,7 +100,7 @@ Install the upstream release tar.gz from [albaintor/integration-kodi releases](h
 
 ## Current Patches
 
-All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is the source of truth). Summary below (30 patches as of `v1.18.13-madalone.2`):
+All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is the source of truth). Summary below (35 patches as of `v1.18.13-madalone.3`):
 
 | # | Name | Summary |
 |---|------|---------|
@@ -134,6 +134,11 @@ All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is 
 | 28 | Broader artwork fallback chain | poster/thumb/landscape/banner/fanart/clearart/icon walk when primary `artwork_type` yields nothing |
 | 29 | Placeholder filter + HTTP status validation | Drops `image://Default*.png`; validates HTTP 200 before base64 encode (do **not** filter on Content-Type — Kodi omits the header) |
 | 30 | Sidecar thumbnail detection | Sonarr `<base>-thumb.jpg`, Kodi `.tbn`, folder-level `poster.jpg` resolved at browse-time (free) + play-time (1 Files.GetDirectory) |
+| 31 | `MODE_CONTEXT_MENU` simple command | `Input.ContextMenu` (always, bypass keymap) — raw context menu on any button |
+| 32 | `MODE_PLAY_SELECTED` simple command | Kodi `play` action — context-sensitive play (plays focused folder/item) |
+| 33 | `MODE_KEYPRESS_C` simple command | `Input.ButtonEvent(c, KB)` — routes through Kodi keymap (Harmony MENU parity: `contextmenu` globally, `queue` in `<FullscreenVideo>`) |
+| 34 | `MODE_CODEC_INFO` / `MODE_PLAYER_DEBUG` / `MODE_SYSTEM_MENU` simple commands | `codecinfo` / `playerdebug` / `GUI.ActivateWindow(shutdownmenu)` |
+| 35 | `MODE_KEYPRESS_ESC` simple command | `Input.ButtonEvent(escape, KB)` — routes through Kodi keymap (Esc-key behavior: close dialog / previous menu / stop / shutdown menu per window context) |
 
 **Dropped pre-release (v1.18.13-madalone.2):** `suppress_media_browser`, `suppress_shuffle`, `suppress_repeat` were drafted as integration-side feature-removal toggles. Pulled after diagnosis showed the feature list doesn't re-propagate to already-subscribed UC3 entities. UX for these now lives in UC-Remote-UI `Config.showMediaBrowserButton` / `showShuffleButton` / `showRepeatButton` (v1.4.2+). Dataclass fields retained as silent no-ops for config backward-compat.
 

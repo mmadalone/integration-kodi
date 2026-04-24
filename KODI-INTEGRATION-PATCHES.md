@@ -690,6 +690,145 @@ Also `.jpeg`, `.png`, `.webp` accepted. Folder-level fallback (any of these in t
 
 ---
 
+## Patch 31: `MODE_CONTEXT_MENU` Simple Command (Harmony parity)
+
+**File:** `src/const.py`
+
+**Problem:** The integration's existing `Commands.CONTEXT_MENU` (mapped to the UC3 MENU button) runs through `kodi_device.context_menu()`, which **branches on fullscreen video**: `Input.ShowOSD` while video is playing, `Input.ContextMenu` otherwise. This diverges from Kodi's default keyboard `c` / Logitech Harmony MENU button (keycode `61507` / `0xF043`), which send `Input.ContextMenu` **unconditionally** regardless of fullscreen state.
+
+User report: migrating from a Harmony remote, pressing the UC3 MENU button during fullscreen playback opens the transport OSD instead of the video context menu (subtitle/audio/bookmark options). Functional delta, not a bug per se — just a choice made by the original fork that doesn't match Harmony users' muscle memory.
+
+**Solution:** Add a new entry to `KODI_ADVANCED_SIMPLE_COMMANDS`:
+
+```python
+"MODE_CONTEXT_MENU": {"method": "Input.ContextMenu", "params": {}, "holdtime": None},
+```
+
+Users who want the Harmony-style behavior map **`MODE_CONTEXT_MENU`** to any button they want (via UC3's per-button command mapping, or on a custom page). The existing `Commands.CONTEXT_MENU` fullscreen-branching behavior is **untouched** — fully backward-compatible for users who rely on the current OSD-in-fullscreen default.
+
+No additional plumbing needed: `media_player.py:154-161` already dispatches `KODI_ADVANCED_SIMPLE_COMMANDS` MethodCall-shaped entries via `device.call_command(method, **params)`.
+
+**Background:**
+- Harmony keycode `61507` = `0xF043` is the MENU button, mapped by Kodi's default `system/keymaps/remote.xml` to the `contextmenu` action (= `Input.ContextMenu` via JSON-RPC).
+- See the [Kodi Keymap wiki](https://kodi.wiki/view/Keymap) for per-remote keycode conventions.
+
+---
+
+## Patch 32: `MODE_PLAY_SELECTED` Simple Command (context-sensitive Kodi play)
+
+**File:** `src/const.py`
+
+**Problem:** The integration exposes `Commands.PLAY_PAUSE` on the UC3 hardware PLAY button, which routes through `Player.PlayPause` JSON-RPC — this is an **explicit toggle** on the currently-active player. It has no effect when the user has browsed to a folder or playlist in Kodi's UI and wants to start playback; pressing UC3 PLAY there does nothing (no active player to toggle).
+
+Kodi's default `remote.xml` maps the remote PLAY button to the `play` action (not `playpause`). The `play` action is **context-sensitive**:
+- No player active + browsing folder → play the focused folder's contents
+- Playlist view + item focused → play from that item
+- Already playing → toggle play/pause (same effect as `playpause`)
+
+User migrating from a Logitech Harmony remote expected this behavior — "highlight a folder, press PLAY, contents play."
+
+**Solution:** One-line addition to `KODI_SIMPLE_COMMANDS`:
+
+```python
+"MODE_PLAY_SELECTED": "play",
+```
+
+Exposed in the UC3 Remote entity's simple-command picker. User binds it to any button (or puts it on a custom page). Dispatches via `Input.ExecuteAction(action="play")`.
+
+**No change to the hardware PLAY button behavior** — `Buttons.PLAY` still sends `Commands.PLAY_PAUSE` → `Player.PlayPause` as before, which is appropriate for the "I'm already playing, I want to pause" use case and the most predictable toggle behavior. Users who want Harmony-style context-sensitive play on the hardware PLAY button can remap it to `MODE_PLAY_SELECTED` via UC3's per-button mapping.
+
+---
+
+## Patch 33: `MODE_KEYPRESS_C` Simple Command (context-aware via Input.ButtonEvent)
+
+**File:** `src/const.py`
+
+**Problem:** Patch 31's `MODE_CONTEXT_MENU` always triggers the Kodi `contextmenu` action regardless of which Kodi window is focused. A Logitech Harmony remote's MENU button, however, sends keycode `61507` (= `0xF043` = virtual key `C`) to Kodi, which Kodi then routes through `system/keymaps/keyboard.xml`'s per-window hierarchy:
+
+- `<global>` default: `c` → `contextmenu`
+- `<FullscreenVideo>` override: `c` → `queue` (shows the current playlist/queue)
+- `<FullscreenLiveTV>` override: `c` → `queue` (same)
+- User custom keymap can override any of the above.
+
+So on a Harmony-driven setup, pressing MENU during fullscreen video shows the queue, whereas pressing MENU when browsing the library shows the context menu — from a single physical button. Patch 31's direct JSON-RPC `Input.ContextMenu` call bypasses this routing and always produces the same behavior.
+
+**Solution:** Add a new entry to `KODI_ADVANCED_SIMPLE_COMMANDS` that uses `Input.ButtonEvent` — Kodi's JSON-RPC equivalent of a real button press, which IS routed through the keymap:
+
+```python
+"MODE_KEYPRESS_C": {
+    "method": "Input.ButtonEvent",
+    "params": {"button": "c", "keymap": "KB"},
+    "holdtime": None,
+},
+```
+
+`keymap: "KB"` selects Kodi's keyboard keymap namespace; `button: "c"` is the keyname entry that Kodi looks up in `keyboard.xml`. Whatever action ends up mapped to `c` in the current window's scope fires — identical to a physical keyboard `c` press or a Harmony MENU button sending keycode 61507.
+
+Naming convention (`MODE_KEYPRESS_<KEY>`) leaves room for additions — e.g. `MODE_KEYPRESS_M` for `m` (OSD) or `MODE_KEYPRESS_O` for codec info, should users ask for them.
+
+**When to use which:**
+- **`MODE_CONTEXT_MENU`** (patch 31) — always opens the context menu overlay. Predictable, explicit, bypass keymap. Use when you want "context menu" specifically and no surprises across windows.
+- **`MODE_KEYPRESS_C`** (patch 33) — context-sensitive per Kodi keymap. Matches Harmony MENU button muscle memory. Use when you want the same button to behave differently during playback vs browse.
+
+No conflict between the two — users can bind each to a different UC3 button.
+
+**Reference:** [Kodi JSON-RPC Input.ButtonEvent PR #16858](https://github.com/xbmc/xbmc/pull/16858) which added this method specifically so JSON-RPC clients could reproduce keyboard/remote input without re-implementing the keymap routing client-side.
+
+---
+
+## Patch 34: Codec Info / Player Debug / System Menu Simple Commands
+
+**File:** `src/const.py`
+
+**Problem:** Three more commonly-requested Kodi actions had no bindable simple command — users needing them had to hand-craft `custom_command` invocations or map through `Input.ExecuteAction` manually.
+
+**Solution:** Three entries in `KODI_ADVANCED_SIMPLE_COMMANDS`:
+
+```python
+"MODE_CODEC_INFO":   "codecinfo",      # Input.ExecuteAction(action="codecinfo")
+"MODE_PLAYER_DEBUG": "playerdebug",    # Input.ExecuteAction(action="playerdebug")
+"MODE_SYSTEM_MENU":  {"method": "GUI.ActivateWindow", "params": {"window": "settings"}, "holdtime": None},
+```
+
+**What each triggers in Kodi:**
+
+- **`MODE_CODEC_INFO`** — toggles the codec-info overlay during playback (resolution, codec, bitrate, container). Default Kodi keyboard: `o` key.
+- **`MODE_PLAYER_DEBUG`** — toggles the player debug overlay (CPU / GPU / FPS / dropped frames / buffer stats). Matches the user's existing Harmony keymap entry `<key id="61589">playerdebug</key>` (keycode 61589 = virtual key `U`).
+- **`MODE_SYSTEM_MENU`** — opens Kodi's **Shutdown menu** (`GUI.ActivateWindow(shutdownmenu)`) which contains Exit, Power off system, Reboot, Hibernate, Suspend, Custom shutdown timer, Minimize, and Inhibit idle shutdown entries. If you want the general-purpose Kodi Settings window instead, change the `window` param to `"settings"`.
+
+No new plumbing; all three dispatch through the existing `KODI_ADVANCED_SIMPLE_COMMANDS` handler in `media_player.py:154-161` (strings → `Input.ExecuteAction`, dicts → method call).
+
+---
+
+## Patch 35: `MODE_KEYPRESS_ESC` Simple Command (Esc-key simulation)
+
+**File:** `src/const.py`
+
+**Problem:** Users coming from keyboard-centric or Harmony-centric Kodi setups expected an "Exit" button that behaves like the physical Esc key — which, crucially, is **context-sensitive** in Kodi's default keymap:
+
+- Global: `escape` → `previousmenu`
+- `<FullscreenVideo>`: `escape` → `stop`
+- `<Home>`: `escape` → `activatewindow(shutdownmenu)` (power menu)
+- Dialog windows: `escape` → `close`
+
+No single direct-action call reproduces all of those. `Input.ExecuteAction(action="back")` is closest but bypasses per-window overrides.
+
+**Solution:** Same shape as patch 33 — use `Input.ButtonEvent` to route through the keymap:
+
+```python
+"MODE_KEYPRESS_ESC": {
+    "method": "Input.ButtonEvent",
+    "params": {"button": "escape", "keymap": "KB"},
+    "holdtime": None,
+},
+```
+
+Kodi's `button="escape"` keyname in the keyboard (`KB`) keymap namespace matches `<escape>` entries in `system/keymaps/keyboard.xml`, so per-window overrides apply.
+
+Naming convention `MODE_KEYPRESS_<KEY>` continues from patch 33's `MODE_KEYPRESS_C`. Both commands follow the same pattern: emulate a keyboard keypress so Kodi handles context-aware routing.
+
+---
+
 ## CI Hygiene (commit `63535d6`, on top of `.12`)
 
 Not a numbered behavioral patch — the `Check Python code formatting` GitHub Actions workflow (pylint / flake8 / isort / black) had been red on `v1.18.7-patched` since the `.4` cherry-pick (2026-04-12), and the `.5`, `.11`, `.12` commits inherited the red status. This commit lands all the lint debt in one pass so CI is green from `.12` onward. Zero behavioral change — the `.12` binary already installed on the Remote is unchanged.

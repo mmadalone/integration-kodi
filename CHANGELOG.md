@@ -11,6 +11,17 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
+### v1.18.13-madalone.3 — 2026-04-24
+
+**Seven new bindable simple commands for the UC3 Remote entity + GitHub Actions workflow fixes.**
+
+- **Added** `MODE_CONTEXT_MENU` (patch 31) — unconditional `Input.ContextMenu` on any bindable button.
+- **Added** `MODE_PLAY_SELECTED` (patch 32) — context-sensitive Kodi `play` action; plays whatever folder/item is currently focused.
+- **Added** `MODE_KEYPRESS_C` (patch 33) — simulates keyboard `c` keypress via `Input.ButtonEvent`, routed through Kodi's keymap hierarchy. Gives Harmony-style per-window behavior: `contextmenu` globally, `queue` in `<FullscreenVideo>`, respects user keymap overrides.
+- **Added** `MODE_CODEC_INFO` / `MODE_PLAYER_DEBUG` / `MODE_SYSTEM_MENU` (patch 34) — `codecinfo` overlay / player debug overlay / shutdown menu window.
+- **Added** `MODE_KEYPRESS_ESC` (patch 35) — simulates keyboard Esc via `Input.ButtonEvent`. Context-aware "Exit" behavior: close dialog / previous menu / stop playback / shutdown menu depending on focused window.
+- **Fixed** `Build & Release` workflow — removed the Docker Hub publish job (fork has no DockerHub credentials / namespace) and added `permissions: contents: write` so the GitHub Release job can publish the tar.gz artifact on tag push.
+
 ### v1.18.13-madalone.2 — 2026-04-24
 
 **MediaBrowser artwork handling + two new per-device UX toggles.**
