@@ -79,6 +79,32 @@ Added error-logging callbacks to 11 `create_task()` calls that previously lost e
 
 Fixed `raise self._state` → `return self._state` in the sensor base class `state` property.
 
+### 15–24. Post-`.4` hardening (v1.18.7-madalone.5 through .12)
+
+Patches 15–24 covered a series of stability fixes landed between the initial `.4` release and the `v1.18.13` rebase. Each is documented individually in [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md):
+
+- **15:** `custom_command` returns `BAD_REQUEST` on parse failure instead of silently falling through.
+- **16:** Second audit pass narrowing the remaining 16 bare `except Exception:` blocks.
+- **17:** Watchdog reconnect delay jitter (±25%) so a fleet of remotes doesn't hammer Kodi in lock-step after a network blip.
+- **18:** `KodiConfigDevice.__post_init__` validates types (bool/int coercion, port range, non-empty identity fields).
+- **19–21:** Select (audio/subtitle) widget fixes — empty options on subscribe, full-snapshot push on track change, gate `OPTIONS` push on actual list change to dodge a Qt `ListView.model` reset in `Select.qml`.
+- **22:** Widen chapter-fetch `except` for Kodi <22 compatibility (`Player.GetChapters` is Kodi 22+).
+- **23:** `on_property_changed` uses `any()` instead of `all()` so bundled stream events aren't dropped.
+- **24:** Watchdog periodic state-refresh safety net — un-announced state changes now surface within ~12s instead of never.
+
+### v1.18.13-madalone.2 (MediaBrowser artwork handling + new toggles)
+
+Six patches focused on making UC3 MediaBrowser-initiated playback behave like Kodi-UI-initiated playback for artwork, plus two new per-device UX toggles:
+
+- **25.** `video_only_browse_filter` (per-device toggle) — hides music and picture browse categories, strips `.nfo`/`.srt`/`.sub`/`.idx`/`.ass`/`.smi`/`.ssa`/`.sup`/`.vtt` companion files from source-directory listings.
+- **26.** `suppress_unsupported_command_errors` (per-device toggle) — swallows Kodi JSON-RPC `ProtocolError` (e.g. pressing Pause on a PVR channel) so they stop surfacing as red-triangle notifications on the UC3. `TransportError` / `ServerTimeoutError` still surface so genuine connectivity issues still alert.
+- **27.** Deprecated **`suppress_volume_overlay`** — the original patch-6 feature-removal approach broke Kodi volume control entirely post UC Remote 3 FW v1.4.1 (which correctly respects feature set). Volume features are now always advertised. For OSD hiding, use UC Remote 3 **Settings → UI → Show volume indicator** (FW v1.4.2+, `Config.showVolumeOverlay`). Config key retained for backcompat; one-time WARNING logged per device if flag is still set to `True`.
+- **28.** Broader artwork fallback chain — when the configured `artwork_type` returns nothing, walks `poster → thumb → landscape → banner → fanart → clearart → icon`. Recovers Netflix-style plugins that expose real thumbnails only under `art["icon"]`.
+- **29.** Kodi placeholder filter + HTTP status validation — `image://Default*.png` (Kodi's internal placeholders like `DefaultVideo.png`) are now filtered from any resolution path. When `download_artwork` is enabled, the fetch validates HTTP status 200 before base64-encoding. Content-Type is **not** checked because Kodi omits that header for thumbnails.
+- **30.** Sidecar thumbnail detection — at both browse time and play time, the integration recognizes Sonarr/Radarr `<basename>-thumb.jpg` / `-poster.jpg` / `-landscape.jpg`, Kodi-native `.tbn`, and folder-level `poster.jpg` / `folder.jpg` / `banner.jpg` / `cover.jpg`. Browse-time detection is free (reuses the existing `Files.GetDirectory` response); play-time detection adds one extra round-trip only when the primary art chain produced nothing.
+
+**Dropped pre-release:** `suppress_media_browser`, `suppress_shuffle`, `suppress_repeat` were drafted and then pulled after diagnosis showed integration-side feature removal doesn't propagate to already-subscribed UC3 entities. The UX for hiding those icons lives at the UC Remote 3 firmware layer instead (`Config.showMediaBrowserButton` / `showShuffleButton` / `showRepeatButton` in v1.4.2+). The three dataclass fields are retained in `KodiConfigDevice` as silent no-ops for backwards compat with pre-release `config.json` entries.
+
 ## Recommended Settings
 
 - **Download artwork:** Enabled — provides instant artwork on first entity open by pre-caching images as base64
@@ -131,24 +157,28 @@ These firmware changes live in the main [UC-Remote-UI](.) project, not in this i
 ## Upstream
 
 - **Original repo:** [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi)
-- **Base version:** v1.18.7 (branch `v1.18.7-patched`)
+- **Base version:** v1.18.13 (branch `v1.18.13-patched`; rebased from `v1.18.7-patched` on 2026-04-22)
+- **Current tag:** `v1.18.13-madalone.2`
 - **License:** [MPL-2.0](LICENSE) (unchanged from upstream)
 
 ## Changed Files
 
-| File | Changes |
-|------|---------|
-| `driver.json` | Updated version, developer, description |
-| `src/const.py` | Added "None (disabled)" to `KODI_POWEROFF_COMMANDS` |
-| `src/kodi_device.py` | Patches 1-6, 9-13: tag stripping, artwork, stop handler, volume overlay, lock refactor, exception hardening, task callbacks, dead code removal |
-| `src/media_player.py` | Patch 7: `eval()` → `ast.literal_eval()` |
-| `src/remote.py` | Patch 8: missing `await` fix |
-| `src/sensor.py` | Patch 14: `raise` → `return` bug fix |
-| `src/config.py` | Patch 6: `suppress_volume_overlay` config field |
-| `src/setup_fields.py` | Patch 6: setup UI checkbox |
-| `src/setup_flow.py` | Patches 6, 10: config wiring, credential scrub |
-| `src/driver.py` | Patch 13: task error callbacks |
-| `src/pykodi/kodi.py` | Documentation: auth check comment |
-| `requirements.txt` | Patch 10: removed unused deps, pinned jsonrpc versions |
+| File | Patches touching it |
+|------|---------------------|
+| `driver.json` | Version / metadata |
+| `src/const.py` | 5 (power-off dropdown), upstream rebase touches |
+| `src/kodi_device.py` | 1–4, 9, 11–13, 16, 17, 20–24, 26–30 (most patch activity) |
+| `src/media_player.py` | 7, 15, 16 |
+| `src/remote.py` | 8 |
+| `src/sensor.py` | 14, 19 |
+| `src/selector.py` | 19 |
+| `src/config.py` | 6, 16, 18, 25–27 (5 new toggle fields + 3 deprecated no-op fields) |
+| `src/setup_fields.py` | 6, 25–27 (new checkboxes + volume overlay deprecation label) |
+| `src/setup_flow.py` | 6, 16, 25, 26 (wires 2 new toggles through setup + reconfigure paths) |
+| `src/media_browser.py` | 16, 25, 30 (video-only filter + sidecar thumbnail detection) |
+| `src/driver.py` | 13 |
+| `src/discover.py` | 16 |
+| `src/pykodi/kodi.py` | 16 |
+| `requirements.txt` | 10, rebase to ucapi 0.6.0 |
 
-See `KODI-INTEGRATION-PATCHES.md` for detailed implementation notes.
+See `KODI-INTEGRATION-PATCHES.md` for full per-patch implementation notes. `CHANGELOG.md` lists user-facing changes by release tag.
