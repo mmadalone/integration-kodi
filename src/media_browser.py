@@ -71,6 +71,79 @@ SOURCE_MEDIA_TYPES_MAPPING = {
     "kodi://sources/programs": KodiMediaTypes.PROGRAMS,
 }
 
+# Companion files (subtitles, metadata) that Kodi's media=video filter may leak through.
+# Used by video_only_browse_filter (item #4c) to strip them client-side.
+_VIDEO_ONLY_BLOCKED_EXTENSIONS = frozenset({".nfo", ".sub", ".srt", ".idx", ".ass", ".smi", ".ssa", ".sup", ".vtt"})
+
+# Root categories hidden when video_only_browse_filter is on (item #4b).
+_VIDEO_ONLY_BLOCKED_PREFIXES = ("kodi://music", "kodi://sources/music", "kodi://sources/pictures")
+
+
+def _is_blocked_video_only_extension(file_dict: dict[str, Any]) -> bool:
+    """Return True if file should be hidden under video_only_browse_filter."""
+    if file_dict.get("filetype") == "directory":
+        return False
+    name = file_dict.get("file") or file_dict.get("label") or ""
+    if not name:
+        return False
+    return os.path.splitext(name)[1].lower() in _VIDEO_ONLY_BLOCKED_EXTENSIONS
+
+
+# Patch 30: sidecar thumbnail detection constants + helpers.
+# Covers Sonarr/Radarr layout (<basename>-thumb.jpg), Kodi native (.tbn), and folder-level art.
+_VIDEO_FILE_EXTENSIONS = frozenset(
+    {".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v", ".mpg", ".mpeg", ".ts", ".webm", ".flv", ".3gp", ".m2ts", ".divx"}
+)
+_PER_VIDEO_SIDECAR_SUFFIXES = ("-thumb", "-poster", "-landscape", "")
+_SIDECAR_IMG_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tbn", ".webp")
+_FOLDER_ART_BASENAMES = ("poster", "folder", "cover", "banner", "thumb", "fanart")
+
+
+def find_sidecar_for_file(file_path: str, files_in_dir: list[dict[str, Any]]) -> str | None:
+    """Find the best sidecar art file path for a given video file from a directory listing.
+
+    Priority:
+      1. Per-video sidecars: <base>-thumb.jpg, <base>-poster.jpg, <base>-landscape.jpg,
+         <base>.tbn, <base>.jpg, etc. (Sonarr/Radarr and Kodi native conventions.)
+      2. Folder-level fallback: poster.jpg, folder.jpg, banner.jpg, cover.jpg, thumb.jpg, fanart.jpg.
+
+    Returns None if nothing usable is found.
+    """
+    if not file_path:
+        return None
+    all_paths = {f.get("file", "") for f in files_in_dir if f.get("filetype") == "file"}
+    base = os.path.splitext(file_path)[0]
+    for suffix in _PER_VIDEO_SIDECAR_SUFFIXES:
+        for ext in _SIDECAR_IMG_EXTENSIONS:
+            candidate = f"{base}{suffix}{ext}"
+            if candidate in all_paths:
+                return candidate
+    parent = file_path.rsplit("/", 1)[0] if "/" in file_path else ""
+    for basename in _FOLDER_ART_BASENAMES:
+        for ext in _SIDECAR_IMG_EXTENSIONS:
+            candidate = f"{parent}/{basename}{ext}" if parent else f"{basename}{ext}"
+            if candidate in all_paths:
+                return candidate
+    return None
+
+
+def _build_sidecar_map(files: list[dict[str, Any]]) -> dict[str, str]:
+    """Build a {video_file_path: sidecar_art_path} map from a directory listing.
+
+    Only video files with a resolvable sidecar appear in the result.
+    """
+    result: dict[str, str] = {}
+    for f in files:
+        if f.get("filetype") != "file":
+            continue
+        path = f.get("file", "")
+        if os.path.splitext(path)[1].lower() not in _VIDEO_FILE_EXTENSIONS:
+            continue
+        sidecar = find_sidecar_for_file(path, files)
+        if sidecar:
+            result[path] = sidecar
+    return result
+
 
 def get_artwork(artworks: dict[str, str] | None) -> str | None:
     """Return best available artwork."""
@@ -113,9 +186,19 @@ class MediaBrowser:
         self._device = device
         self._back_support = False
         if self._back_support:
-            self._library_items = KODI_BROWSING_BACK + KODI_BROWSING
+            self._library_items = list(KODI_BROWSING_BACK + KODI_BROWSING)
         else:
-            self._library_items = KODI_BROWSING
+            self._library_items = list(KODI_BROWSING)
+        # Item #4b: hide music and pictures categories when video_only_browse_filter is on.
+        if device.device_config.video_only_browse_filter:
+            self._library_items = [
+                entry
+                for entry in self._library_items
+                if not (
+                    any(entry.media_id.startswith(p) for p in _VIDEO_ONLY_BLOCKED_PREFIXES)
+                    or any((entry.parent_id or "").startswith(p) for p in _VIDEO_ONLY_BLOCKED_PREFIXES)
+                )
+            ]
 
     def get_localized(self, value: str) -> str:
         """Return localized value."""
@@ -163,8 +246,14 @@ class MediaBrowser:
             items=[],
         )
 
-    def get_item_from_file(self, file: dict[str, Any], media_type: str, extract_thumbnail=True) -> BrowseMediaItem:
-        """Build item from file."""
+    def get_item_from_file(
+        self, file: dict[str, Any], media_type: str, thumbnail_url: str | None = None
+    ) -> BrowseMediaItem:
+        """Build item from file.
+
+        `thumbnail_url` is the pre-computed HTTP URL for this item's thumbnail (or None).
+        Caller is responsible for sidecar detection / picture-thumbnail generation.
+        """
         if file.get("filetype", "directory") == "directory":
             return BrowseMediaItem(
                 title=file.get("label", ""),
@@ -174,14 +263,9 @@ class MediaBrowser:
                 can_browse=True,
                 can_play=False,
                 can_search=True,
+                thumbnail=thumbnail_url,
                 items=[],
             )
-        if extract_thumbnail:
-            thumbnail: str = file.get("file")
-            if thumbnail:
-                thumbnail = self._device.client.get_thumbnail_from_file(thumbnail.rstrip("/"))
-        else:
-            thumbnail: str | None = None
         return BrowseMediaItem(
             title=file.get("label", ""),
             media_id=file.get("file", ""),
@@ -190,7 +274,7 @@ class MediaBrowser:
             can_browse=False,
             can_play=True,
             can_search=True,
-            thumbnail=thumbnail,
+            thumbnail=thumbnail_url,
             items=[],
         )
 
@@ -600,8 +684,18 @@ class MediaBrowser:
                     # Each files have following format : smb://...|nfs://...|multipath://...
                     if self.add_back_entry(item.media_id, paging):
                         item.items.append(self.get_back_item("kodi://sources"))
-                    for file in data.get("files", data.get("sources", [])):
-                        item.items.append(self.get_item_from_file(file, media_type, False))
+                    _video_only = self._device.device_config.video_only_browse_filter
+                    # Patch 30: pre-scan directory listing for sidecar thumbnails (free — reuses
+                    # existing Files.GetDirectory response; no extra Kodi round-trip).
+                    _files_raw = data.get("files", data.get("sources", []))
+                    _sidecar_map = _build_sidecar_map(_files_raw)
+                    for file in _files_raw:
+                        # Item #4c: skip companion files (.nfo/.srt/.sub/...) when video-only is on.
+                        if _video_only and _is_blocked_video_only_extension(file):
+                            continue
+                        _sidecar = _sidecar_map.get(file.get("file", ""))
+                        _thumb_url = self._device.client.get_thumbnail_from_file(_sidecar) if _sidecar else None
+                        item.items.append(self.get_item_from_file(file, media_type, thumbnail_url=_thumb_url))
                 elif entry.output == KodiObjectType.MOVIE:
                     if self.add_back_entry(item.media_id, paging):
                         item.items.append(self.get_back_item("kodi://videos", str(MediaContentType.MOVIE.value)))
@@ -665,7 +759,7 @@ class MediaBrowser:
                         # Strip off extension file
                         media["label"] = os.path.splitext(media.get("label"))[0]
                         media["filetype"] = "file"
-                        item.items.append(self.get_item_from_file(media, media_id, extract_thumbnail=False))
+                        item.items.append(self.get_item_from_file(media, media_id, thumbnail_url=None))
                 else:
                     _LOG.warning(
                         "[%s] Browsing unsupported output type %s for given media id %s and entry %s",
@@ -719,6 +813,11 @@ class MediaBrowser:
                         arguments["media"] = media
                         item.media_type = KodiMediaTypes.PICTURES.value
                         item.media_class = KodiMediaTypes.PICTURES.value
+                    # Item #4a: force server-side video-only filter when toggle is on.
+                    # Overrides pictures filter above; pictures sources are hidden at
+                    # __init__ anyway when the toggle is on (item #4b).
+                    if self._device.device_config.video_only_browse_filter:
+                        arguments["media"] = KodiMediaTypes.VIDEOS.value
 
                     _LOG.debug(
                         "[%s] Browsing source %s (%s) : %s",
@@ -729,10 +828,21 @@ class MediaBrowser:
                     )
                     data = await self._device.server.Files.GetDirectory(**arguments)
                     if data:
+                        _video_only = self._device.device_config.video_only_browse_filter
+                        # Patch 30: pre-scan for sidecar thumbnails (no-op for picture sources).
+                        _sidecar_map = _build_sidecar_map(data["files"])
                         for file in data["files"]:
-                            # Thumbnail extraction only works with pictures
-                            extract_thumbnail = media == KodiMediaTypes.PICTURES.value
-                            item.items.append(self.get_item_from_file(file, media_type, extract_thumbnail))
+                            # Item #4c: skip companion files (.nfo/.srt/.sub/...) when video-only is on.
+                            if _video_only and _is_blocked_video_only_extension(file):
+                                continue
+                            _file_path = file.get("file", "")
+                            if media == KodiMediaTypes.PICTURES.value and file.get("filetype") == "file":
+                                # Pictures: the file itself IS the image; serve via Kodi's /image/ endpoint.
+                                _thumb_url = self._device.client.get_thumbnail_from_file(_file_path.rstrip("/"))
+                            else:
+                                _sidecar = _sidecar_map.get(_file_path)
+                                _thumb_url = self._device.client.get_thumbnail_from_file(_sidecar) if _sidecar else None
+                            item.items.append(self.get_item_from_file(file, media_type, thumbnail_url=_thumb_url))
                         paging.count = data.get("limits", {}).get("total", 0)
                         if self._back_support:
                             paging.count = paging.count + back_buttons
