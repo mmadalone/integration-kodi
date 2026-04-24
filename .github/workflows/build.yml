@@ -16,9 +16,12 @@ env:
   HASH_FILENAME: uc-src.hash
   # Python version to use in the builder image. See https://hub.docker.com/r/unfoldedcircle/r2-pyinstaller for possible versions.
   PYTHON_VER: 3.11.13-0.4.0
-  # Docker configuration
-  REGISTRY: docker.io
-  IMAGE_NAME: albator78/kodi-integration
+
+# Required for the `release:` job to create GitHub Releases via softprops/action-gh-release.
+# Default GITHUB_TOKEN permissions are `contents: read` in modern GitHub Actions — the release
+# step would otherwise 403 when trying to upload tag assets.
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -112,46 +115,11 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-  docker:
-    runs-on: ubuntu-latest
-    environment: Ubuntu
-    needs: [build]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to Docker Hub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+  # `docker:` job removed in v1.18.13-madalone.x fork. Upstream publishes a Docker image to
+  # `albator78/kodi-integration` on Docker Hub; the fork has no counterpart namespace nor the
+  # DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets, so the job failed on every tag push. The
+  # GitHub Actions binary artifact (from the `build:` job) and the GitHub Release (from the
+  # `release:` job below) cover the fork's release story.
 
   release:
     name: Create Release
