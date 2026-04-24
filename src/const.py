@@ -225,6 +225,12 @@ KODI_FEATURES = [
 
 # Taken from https://kodi.wiki/view/JSON-RPC_API/v13#Input.Action
 KODI_SIMPLE_COMMANDS = {
+    # Patch 32: Kodi's context-sensitive "play" action. Unlike Commands.PLAY_PAUSE
+    # (which calls Player.PlayPause on the current player), this triggers whatever
+    # is currently focused in the Kodi UI — e.g. highlighting a folder in the library
+    # and sending MODE_PLAY_SELECTED plays the folder contents. Matches the Logitech
+    # Harmony PLAY button behavior.
+    "MODE_PLAY_SELECTED": "play",
     "MENU_VIDEO": "showvideomenu",  # TODO : showvideomenu not working ?
     "MODE_FULLSCREEN": "togglefullscreen",
     "MODE_ZOOM_IN": "zoomin",
@@ -326,6 +332,43 @@ KODI_ADVANCED_SIMPLE_COMMANDS: dict[str, MethodCall | str] = {
         "holdtime": None,
     },
     "MODE_SCREENSAVER": {"method": "GUI.ActivateWindow", "params": {"window": "screensaver"}},
+    # Patch 31: unconditional Input.ContextMenu (matches Kodi's keyboard `c` / Harmony MENU
+    # button action 61507). Existing CONTEXT_MENU button keeps its fullscreen-branch behavior
+    # (ShowOSD during video / ContextMenu elsewhere); this simple command is the raw variant.
+    "MODE_CONTEXT_MENU": {"method": "Input.ContextMenu", "params": {}, "holdtime": None},
+    # Patch 33: simulate the keyboard `c` keypress via Input.ButtonEvent. Unlike the
+    # MODE_CONTEXT_MENU entry above (which calls the `contextmenu` action directly and bypasses
+    # Kodi's keymap), this routes the press through Kodi's keymap.xml hierarchy — so per-window
+    # overrides apply (default Kodi: `c` → `contextmenu` in <global>, `c` → `queue` inside
+    # <FullscreenVideo>). Matches a Harmony remote's MENU button that sends keycode 61507
+    # (= virtual key C) and relies on Kodi's context-sensitive key routing.
+    "MODE_KEYPRESS_C": {
+        "method": "Input.ButtonEvent",
+        "params": {"button": "c", "keymap": "KB"},
+        "holdtime": None,
+    },
+    # Patch 34: three more common-request commands.
+    # - codecinfo: show the codec info overlay (resolution, codec, bitrate).
+    # - playerdebug: toggle the debug overlay (CPU/GPU/FPS/dropped frames). Matches user's
+    #   existing Harmony keymap entry <key id="61589">playerdebug</key>.
+    # - system menu: open Kodi's Settings window.
+    "MODE_CODEC_INFO": "codecinfo",
+    "MODE_PLAYER_DEBUG": "playerdebug",
+    "MODE_SYSTEM_MENU": {
+        "method": "GUI.ActivateWindow",
+        "params": {"window": "shutdownmenu"},
+        "holdtime": None,
+    },
+    # Patch 35: simulate the keyboard Esc keypress via Input.ButtonEvent — same routing-
+    # through-keymap mechanism as MODE_KEYPRESS_C (patch 33). Kodi defaults: `escape` →
+    # `previousmenu` globally, `stop` in <FullscreenVideo>, `activatewindow(shutdownmenu)`
+    # on the Home screen, `close` in most dialog windows. Gives users an "Exit" button
+    # that does whatever Esc would do in the currently-focused Kodi window.
+    "MODE_KEYPRESS_ESC": {
+        "method": "Input.ButtonEvent",
+        "params": {"button": "escape", "keymap": "KB"},
+        "holdtime": None,
+    },
 }
 
 KODI_ALTERNATIVE_BUTTONS_KEYMAP: dict[str, MethodCall] = {
