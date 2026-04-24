@@ -427,6 +427,16 @@ class SetupFlow:
                     )
                     set_setup_field(
                         user_input.settings,
+                        "video_only_browse_filter",
+                        self._reconfigured_device.video_only_browse_filter,
+                    )
+                    set_setup_field(
+                        user_input.settings,
+                        "suppress_unsupported_command_errors",
+                        self._reconfigured_device.suppress_unsupported_command_errors,
+                    )
+                    set_setup_field(
+                        user_input.settings,
                         "sensor_audio_stream_config",
                         self._reconfigured_device.sensor_audio_stream_config,
                     )
@@ -607,6 +617,10 @@ class SetupFlow:
         download_artwork = msg.input_values.get("download_artwork", "false") == "true"
         disable_keyboard_map = msg.input_values.get("disable_keyboard_map", "false") == "true"
         suppress_volume_overlay = msg.input_values.get("suppress_volume_overlay", "false") == "true"
+        video_only_browse_filter = msg.input_values.get("video_only_browse_filter", "false") == "true"
+        suppress_unsupported_command_errors = (
+            msg.input_values.get("suppress_unsupported_command_errors", "false") == "true"
+        )
         show_stream_name = msg.input_values.get("show_stream_name", "false") == "true"
         show_stream_language_name = msg.input_values.get("show_stream_language_name", "false") == "true"
         sensor_include_device_name = msg.input_values.get("sensor_include_device_name", "false") == "true"
@@ -704,6 +718,8 @@ class SetupFlow:
                 download_artwork=download_artwork,
                 disable_keyboard_map=disable_keyboard_map,
                 suppress_volume_overlay=suppress_volume_overlay,
+                video_only_browse_filter=video_only_browse_filter,
+                suppress_unsupported_command_errors=suppress_unsupported_command_errors,
                 show_stream_name=show_stream_name,
                 show_stream_language_name=show_stream_language_name,
                 sensor_audio_stream_config=sensor_audio_stream_config,
@@ -752,6 +768,10 @@ class SetupFlow:
         download_artwork = msg.input_values.get("download_artwork", "false") == "true"
         disable_keyboard_map = msg.input_values.get("disable_keyboard_map", "false") == "true"
         suppress_volume_overlay = msg.input_values.get("suppress_volume_overlay", "false") == "true"
+        video_only_browse_filter = msg.input_values.get("video_only_browse_filter", "false") == "true"
+        suppress_unsupported_command_errors = (
+            msg.input_values.get("suppress_unsupported_command_errors", "false") == "true"
+        )
         show_stream_name = msg.input_values.get("show_stream_name", "false") == "true"
         show_stream_language_name = msg.input_values.get("show_stream_language_name", "false") == "true"
         sensor_include_device_name = msg.input_values.get("sensor_include_device_name", "false") == "true"
@@ -785,6 +805,8 @@ class SetupFlow:
         self._reconfigured_device.download_artwork = download_artwork
         self._reconfigured_device.disable_keyboard_map = disable_keyboard_map
         self._reconfigured_device.suppress_volume_overlay = suppress_volume_overlay
+        self._reconfigured_device.video_only_browse_filter = video_only_browse_filter
+        self._reconfigured_device.suppress_unsupported_command_errors = suppress_unsupported_command_errors
         self._reconfigured_device.show_stream_name = show_stream_name
         self._reconfigured_device.show_stream_language_name = show_stream_language_name
         self._reconfigured_device.sensor_audio_stream_config = sensor_audio_stream_config

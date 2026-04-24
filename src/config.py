@@ -62,6 +62,11 @@ class KodiConfigDevice:
     download_artwork: bool = field(default=False)
     disable_keyboard_map: bool = field(default=False)
     suppress_volume_overlay: bool = field(default=False)
+    suppress_media_browser: bool = field(default=False)
+    suppress_shuffle: bool = field(default=False)
+    suppress_repeat: bool = field(default=False)
+    video_only_browse_filter: bool = field(default=False)
+    suppress_unsupported_command_errors: bool = field(default=False)
     show_stream_name: bool = field(default=True)
     show_stream_language_name: bool = field(default=True)
     sensor_audio_stream_config: int = field(default=KodiStreamConfig.FULL)
@@ -92,6 +97,11 @@ class KodiConfigDevice:
             "download_artwork",
             "disable_keyboard_map",
             "suppress_volume_overlay",
+            "suppress_media_browser",
+            "suppress_shuffle",
+            "suppress_repeat",
+            "video_only_browse_filter",
+            "suppress_unsupported_command_errors",
             "show_stream_name",
             "show_stream_language_name",
             "sensor_include_device_name",

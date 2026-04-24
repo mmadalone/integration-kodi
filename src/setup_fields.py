@@ -219,8 +219,27 @@ SETUP_FIELDS = [
         "field": {"checkbox": {"value": False}},
         "id": "suppress_volume_overlay",
         "label": {
-            "en": "Suppress volume overlay on remote (use TV's OSD instead)",
-            "fr": "Masquer l'indicateur de volume sur la telecommande (utiliser l'OSD de la TV)",
+            "en": "(Deprecated — use UC Remote 3 Settings > UI > Show volume indicator instead) "
+            "Suppress volume overlay on remote",
+            "fr": "(Obsolète — utilisez UC Remote 3 Paramètres > UI > Afficher l'indicateur de volume) "
+            "Masquer l'indicateur de volume sur la telecommande",
+        },
+    },
+    {
+        "field": {"checkbox": {"value": False}},
+        "id": "video_only_browse_filter",
+        "label": {
+            "en": "Video-only browse (hide music, pictures, and subtitle/nfo files)",
+            "fr": "Navigation vidéo uniquement (masquer musique, images et fichiers nfo/sous-titres)",
+        },
+    },
+    {
+        "field": {"checkbox": {"value": False}},
+        "id": "suppress_unsupported_command_errors",
+        "label": {
+            "en": "Suppress Kodi command errors (hides 'not supported' notifications, e.g. pause on live TV)",
+            "fr": "Masquer les erreurs de commande Kodi (masque les notifications 'non supporté', "
+            "par ex. pause sur TV en direct)",
         },
     },
     {
