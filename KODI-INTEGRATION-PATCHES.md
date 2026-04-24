@@ -157,6 +157,8 @@ if self._device_config.power_off_command == "None":
 
 ## Patch 6: Suppress Volume Overlay on Remote
 
+> **⚠️ Reworked in v1.18.13-madalone.2 — see Patch 27.** The feature-removal approach below conflates entity capability with UI preference; post remote-ui v1.4.1, removing `Features.VOLUME` to hide the OSD also broke Kodi volume control entirely. Patch 27 deprecates the toggle and redirects users to remote-ui v1.4.2+ `Config.showVolumeOverlay`. The config key is retained for backwards compat; the feature-removal + attribute-suppression behavior below is **no longer active**.
+
 **Files:** `src/config.py`, `src/kodi_device.py`, `src/setup_fields.py`, `src/setup_flow.py`
 
 **Problem:** When changing Kodi volume via the UC Remote's hardware buttons, the remote displays a large volume overlay (number + slider, or "+" icon) on its screen. This is redundant because Kodi already shows its own volume OSD on the TV.
@@ -410,6 +412,281 @@ if all(
 The driver had **no periodic state refresh**. `start_watchdog` pinged every 10s (with ±25% jitter from patch 17) but only checked connectivity — it didn't refresh media/select state. So the Remote could drift arbitrarily far from Kodi's actual state until the user next triggered a command that forced a poll.
 
 **Solution:** On every successful watchdog tick while the websocket is connected, fire `asyncio.create_task(self._update_states(deferred=0))` as a fire-and-forget task. The existing `_update_lock` handles collision with command-triggered polls. Worst-case lag for an un-announced state change drops from "infinite" to ~12s (watchdog jitter upper bound). The extra traffic is cheap: `_update_states` only emits an `entity_change` event when something actually changed, so idle players generate no extra Remote traffic.
+
+---
+
+## Dropped Patches 25-27 (considered during v1.18.13-madalone.2, pulled pre-release)
+
+Three integration-side toggles were drafted during this release cycle: `suppress_media_browser`, `suppress_shuffle`, `suppress_repeat`. All three removed specific `Features.*` from the advertised feature set to make remote-ui hide the corresponding icons. They were pulled after smoke-testing revealed the mechanism is architecturally unsound for the common use case:
+
+- **Why it looked correct on paper.** Remote-ui's device-class QMLs (e.g. `Receiver.qml:549,567`) gate the shuffle/repeat icons with `visible: entityObj.hasFeature(MediaPlayerFeatures.Shuffle)`. Strip the feature, hide the icon. Straightforward.
+- **Why it fails in practice.** `driver.py:_configure_new_device` reuses the existing `KodiDevice` on reconfigure (line 325-326). `_register_available_entities` updates `api.available_entities`, but **not** `api.configured_entities` — the entities already subscribed to activities on the UC3. The ucapi protocol has `update_attributes` and `subscribe`/`unsubscribe` events but no `features_changed` event. So the remote's activity-side cache keeps the old feature list. Even a remote reboot doesn't clear it (persisted state). The only reliable way to pick up new features is a full integration uninstall + reinstall + fresh setup — unacceptable UX for a "toggle a checkbox" action.
+- **Same architectural mistake as patch 6** (`suppress_volume_overlay`). Hiding UI by removing entity capabilities conflates "what the entity can do" with "what the user wants to see in the UI". Volume got this right by moving the concern to `UC-Remote-UI` `Config.showVolumeOverlay` (v1.4.2). Shuffle/Repeat/MediaBrowser will follow the same pattern in a future remote-ui release (`Config.showShuffleButton`, `Config.showRepeatButton`, `Config.showMediaBrowserButton` — single QML `visible:` binding each, ~20 lines, no entity-feature games).
+- **Config-field residue.** The three fields (`suppress_media_browser`, `suppress_shuffle`, `suppress_repeat`) are retained in `KodiConfigDevice` with `default=False` so that existing `config.json` files from v1.18.13-madalone.2 pre-release builds still load without `TypeError`. They are no longer settable via setup/reconfigure and no code reads them. A future release may remove them entirely.
+
+---
+
+## Patch 25: `video_only_browse_filter` Toggle
+
+**Files:** `src/config.py`, `src/setup_fields.py`, `src/setup_flow.py`, `src/media_browser.py`
+
+**Problem:** Users who only use Kodi for video see music albums, picture sources, and subtitle/metadata companion files (`.nfo`, `.srt`, `.idx`, etc.) cluttering their browse results.
+
+**Solution:** New per-device boolean toggle `video_only_browse_filter` (default `False`). Three interventions in `src/media_browser.py`:
+
+1. **Root-menu filter (4b).** `MediaBrowser.__init__` filters `self._library_items` to drop any `KodiMediaEntry` whose `media_id` or `parent_id` starts with `kodi://music`, `kodi://sources/music`, or `kodi://sources/pictures`. Uses `list(KODI_BROWSING)` to make a copy so the module-level `KODI_BROWSING` constant is never mutated.
+
+2. **Server-side filter (4a).** In `browse_media()`, at the source sub-directory browse path where `arguments` for `Files.GetDirectory` is built, force `arguments["media"] = KodiMediaTypes.VIDEOS.value` when the toggle is on. Uses Kodi's native `Files.GetDirectory` `media` parameter (official JSON-RPC API) so filtering happens server-side. The existing picture-source branch is preserved for backward compat when the toggle is off.
+
+3. **Client-side extension filter (4c).** At both file-iteration sites (root `FILE` output block + source sub-directory block), skip entries whose lowercase extension is in `_VIDEO_ONLY_BLOCKED_EXTENSIONS = frozenset({".nfo", ".sub", ".srt", ".idx", ".ass", ".smi", ".ssa", ".sup", ".vtt"})`. Belt-and-braces: Kodi's `media=video` may leak some of these through depending on source type (plugin vs SMB vs library).
+
+```python
+_VIDEO_ONLY_BLOCKED_EXTENSIONS = frozenset(
+    {".nfo", ".sub", ".srt", ".idx", ".ass", ".smi", ".ssa", ".sup", ".vtt"}
+)
+
+def _is_blocked_video_only_extension(file_dict: dict[str, Any]) -> bool:
+    if file_dict.get("filetype") == "directory":
+        return False
+    name = file_dict.get("file") or file_dict.get("label") or ""
+    if not name:
+        return False
+    return os.path.splitext(name)[1].lower() in _VIDEO_ONLY_BLOCKED_EXTENSIONS
+```
+
+**Caveat:** `paging.count` reflects Kodi's server-side total, which will be larger than the displayed count when extension filter drops entries. Minor UI inconsistency, acceptable.
+
+---
+
+## Patch 26: `suppress_unsupported_command_errors` Toggle
+
+**Files:** `src/config.py`, `src/setup_fields.py`, `src/setup_flow.py`, `src/kodi_device.py`
+
+**Problem:** Commands that Kodi doesn't support in the current context (pausing a PVR channel, seeking a live stream, etc.) surface on the UC Remote as red-triangle "Error sending the command / Kodi is not responding. Error code: 400" notifications. The operation legitimately isn't supported, but the error notification is noisy.
+
+**Solution:** New per-device boolean toggle `suppress_unsupported_command_errors` (default `False`). Narrow: only suppresses JSON-RPC `ProtocolError` (Kodi application-layer errors like `-32601 "Method not found"`, and other per-command rejections). `TransportError` and `ServerTimeoutError` still surface as `StatusCodes.BAD_REQUEST` so genuine connectivity issues still alert.
+
+Implementation in the `@retry()` decorator's second-retry except clause (post-retry, just before the fallthrough `return BAD_REQUEST`):
+
+```python
+except (TransportError, ProtocolError, ServerTimeoutError) as ex2:
+    log_function("[%s] Error calling %s on (%s): %r", ...)
+    if (
+        isinstance(ex2, ProtocolError)
+        and obj._device_config.suppress_unsupported_command_errors
+    ):
+        _LOG.debug(
+            "[%s] Suppressing Kodi ProtocolError on %s per suppress_unsupported_command_errors",
+            obj.device_config.address, func.__name__,
+        )
+        return ucapi.StatusCodes.OK
+    return ucapi.StatusCodes.BAD_REQUEST
+```
+
+The first-retry except is unchanged — one-off failures still retry once so the toggle only suppresses *persistent* unsupported-command errors. No changes to `retry_call_command`.
+
+---
+
+## Patch 27: Deprecate `suppress_volume_overlay` (Rework of Patch 6)
+
+**Files:** `src/setup_fields.py`, `src/kodi_device.py`
+
+**Problem:** Patch 6's `suppress_volume_overlay` toggle conflated two concerns — entity capability (`Features` set) and UI preference (OSD visibility). It removed `Features.VOLUME`, `Features.VOLUME_UP_DOWN`, `Features.MUTE_TOGGLE`, `Features.MUTE`, `Features.UNMUTE` to hide the volume OSD on the remote.
+
+Remote-ui v1.4.1 added feature-check guards (`mediaPlayer.cpp` / `volume.start()` pipeline now respects the feature set correctly). The side effect: with `suppress_volume_overlay=True`, volume control on Kodi stops working entirely — the OSD goes away, but so does the ability to actually change volume. Before remote-ui v1.4.1 the bug was masked because `volume.start()` was unguarded.
+
+**Root cause:** removing features to hide UI is the wrong knob. UI preferences belong in the remote-ui `Config`, not in the integration's advertised entity capabilities.
+
+**Solution:** Deprecate the toggle and redirect users to remote-ui v1.4.2+ (shipped 2026-04-24, commit `08e193e`) where `Config.showVolumeOverlay` controls OSD visibility independently of entity features.
+
+1. `src/kodi_device.py` `__init__`: **delete the feature-removal block** for `suppress_volume_overlay`. Volume features are now always advertised.
+2. `src/kodi_device.py`: **delete 4 MediaAttr emission guards**:
+   - `on_volume_changed` × 2 (`MediaAttr.VOLUME`, `MediaAttr.MUTED`).
+   - `_update_states` periodic refresh × 2 (same attributes).
+   - `attributes` property × 1 (the conditional `if not ...: attributes[MediaAttr.VOLUME] = ...` block).
+
+   Volume and mute attributes are now always emitted.
+
+3. `src/kodi_device.py` `__init__`: add one-time WARNING log if the flag is still set to True in a migrated config:
+
+```python
+if device_config.suppress_volume_overlay:
+    _LOG.warning(
+        "[%s] suppress_volume_overlay is deprecated: volume features are now advertised. "
+        "To hide the on-screen volume indicator, use UC Remote 3 Settings > UI > "
+        "Show volume indicator (requires remote-ui v1.4.2+).",
+        device_config.address,
+    )
+```
+
+4. `src/setup_fields.py`: rewrite the checkbox label to indicate deprecation:
+
+```
+en: "(Deprecated — use UC Remote 3 Settings > UI > Show volume indicator instead) Suppress volume overlay on remote"
+fr: "(Obsolète — utilisez UC Remote 3 Paramètres > UI > Afficher l'indicateur de volume) Masquer l'indicateur de volume sur la telecommande"
+```
+
+**Retained from patch 6:** the `on_volume_changed()` bug fix at line 477 (`volume != int(self._app_properties["volume"])`, replacing the always-false `volume != self._volume`) is orthogonal to the OSD concern and stays.
+
+**Config key retained:** `suppress_volume_overlay: bool = field(default=False)` remains in `KodiConfigDevice`. Migrated configs with `True` are silently accepted (no migration step needed) — the `__post_init__` boolean coercion still fires, the value is read once in `__init__` solely to drive the deprecation log, and has no other runtime effect.
+
+**User impact on upgrade from `v1.18.13-madalone.1`:**
+- Users who had `suppress_volume_overlay=True` will see one WARNING log per device on start.
+- Volume +/- buttons now correctly change Kodi volume (was broken in `.1` after remote-ui v1.4.1).
+- The OSD fires on volume events. For OSD hiding, install remote-ui v1.4.2+ and set `Config.showVolumeOverlay=false` in UC Remote 3 Settings.
+
+---
+
+## Patch 28: Broader Artwork Fallback Chain (Plugin/Unscraped Content)
+
+**File:** `src/kodi_device.py`
+
+**Problem:** Media played via UC3 MediaBrowser showed no artwork on the player widget for plugin-source content (Netflix, unscraped local files) even when Kodi's `Player.GetItem` response had usable artwork under a key the integration didn't check.
+
+**Diagnosis (live JSON-RPC samples against Kodi 21.3 on `madteevee.local`, 2026-04-24):**
+
+| Source | `art` dict | `thumbnail` | Notes |
+|---|---|---|---|
+| Library movie | `{poster, thumb, fanart, icon, clearlogo}` | populated | Works via `art["thumb"]` (default `artwork_type`) |
+| Netflix plugin | `{icon: <real URL>}` only | `""` | Broke — `art["thumb"]` is None |
+| YouTube plugin | `{icon, thumb, poster, fanart}` all populated | populated | Works |
+| Unscraped local | `{icon: "DefaultVideo.png"}` | `""` | Broke — art dict has only the placeholder icon key |
+
+Netflix and similar plugins store the real thumbnail URL under `art["icon"]` only. The integration's fallback chain at `kodi_device.py:1070-1078` was:
+1. `art.get(artwork_type)` (default `"thumb"`)
+2. If `artwork_type == "fanart"`: `self._item["fanart"]`
+3. `self._item["thumbnail"]`
+4. Give up → `None` → empty URL emitted
+
+That chain never touched `art["icon"]`, `art["poster"]`, `art["landscape"]`, etc. so any source that populated only those got empty artwork.
+
+**Solution:** After the existing chain, walk a broader fallback list of art keys before giving up. Preserves the user's configured `artwork_type` preference (tries it first); only expands when the primary chain produces nothing:
+
+```python
+if thumbnail is None or thumbnail == "":
+    for fallback_key in ("poster", "thumb", "landscape", "banner", "fanart", "clearart", "icon"):
+        candidate = art.get(fallback_key)
+        if candidate:
+            thumbnail = candidate
+            _LOG.debug("[%s] artwork fallback: using art[%r] for type=%s", ...)
+            break
+```
+
+Order chosen for visual priority: `poster` / `thumb` / `landscape` are the "primary" visual representations; `banner` / `fanart` / `clearart` are contextual; `icon` is last resort (accepts Kodi's `DefaultVideo.png` placeholder rather than emitting blank).
+
+**Trade-off on `DefaultVideo.png`:** unscraped library items now show Kodi's generic default-video icon on the UC3 player widget instead of a blank. Acceptable — users who want real art should scrape their library or use Embuary/TMDb Helper to backfill metadata. Blank was strictly worse as feedback.
+
+**No new config field.** Hardcoded priority list; if users need further control later, an `artwork_fallback_chain` dataclass field could be added.
+
+**Verification:** with the currently-playing Seth Meyers download (`"art": {"icon": "image://DefaultVideo.png/"}`), the fallback picks `"icon"` → `_media_image_url` = `http://madteevee.local:8080/image/image%3A%2F%2FDefaultVideo.png%2F` → UC3 fetches the generic video icon. For Netflix content, the same path emits the profile-thumbnail URL. No regression on library items (configured `artwork_type` still matches first).
+
+---
+
+## Patch 29: Filter Kodi `DefaultXxx.png` Placeholders + Validate Artwork Fetch
+
+**File:** `src/kodi_device.py`
+
+**Problem:** Patch 28's broader fallback chain was picking up `art["icon"]` values in cases where the primary `artwork_type` ("thumb" by default) returned nothing. For unscraped content, Kodi populates `"icon"` with its internal default placeholder URIs (`image://DefaultVideo.png/`, `image://DefaultAlbumCover.png/`, etc.). These URIs are **not servable as useful images** by Kodi's web API:
+
+- When the UC3 (or the integration's `download_artwork` fetch) hits `http://kodi:8080/image/image%3A%2F%2FDefaultVideo.png%2F`, Kodi returns `Content-Type: application/octet-stream` with an HTML error body, not an image.
+- With `download_artwork=true`, the integration would base64-encode the HTML body and ship it as `data:application/octet-stream;base64,<junk>` — the remote-ui cannot decode this and renders either a broken image or a blank tile.
+- With `download_artwork=false`, the remote-ui fetches the URL directly and gets the same non-image response.
+
+Either way the result is user-visible garbage instead of a clean "no art" placeholder. Diagnosed via a parallel `UC-Remote-UI` debugging session that observed the `application/octet-stream + HTML` response on the wire.
+
+**Solution — two complementary filters:**
+
+**29a — Discard `image://Default*` at the integration layer.** Two check sites in the artwork resolution block:
+
+1. Inside the patch-28 fallback loop, skip candidates that start with `"image://Default"`:
+   ```python
+   for fallback_key in ("poster", "thumb", "landscape", "banner", "fanart", "clearart", "icon"):
+       candidate = art.get(fallback_key)
+       if candidate and not candidate.startswith("image://Default"):
+           thumbnail = candidate
+           ...
+   ```
+2. After the fallback chain resolves, catch the case where the *primary* `art[artwork_type]` or `self._item["thumbnail"]` returned a placeholder (patch 28's filter only covered the fallback branch):
+   ```python
+   if thumbnail and thumbnail.startswith("image://Default"):
+       thumbnail = None
+   ```
+
+Netflix's `icon`-based real-URL case (`image://https%3a%2f%2f...`) is preserved because it doesn't match `image://Default`. Library movies unaffected — they resolve via `art["thumb"]` without hitting either guard. Unscraped content now emits empty → UC3 renders its own clean placeholder.
+
+**29b — HTTP status validation in the `download_artwork` fetch path.** Belt-and-braces for placeholder URIs that slip past 29a, bad SMB mounts, plugin error pages, etc. Before base64-encoding the response, reject non-200 responses:
+
+```python
+if response.status != 200:
+    _LOG.debug("[...] artwork fetch non-200 (status=%s url=%s), discarding", ...)
+    self._media_image_data = ""
+else:
+    # ... existing encode-to-data-URI logic
+```
+
+**Content-Type is NOT checked** — Kodi's webserver deliberately omits the `Content-Type` header entirely for thumbnails. A direct probe against a real library thumbnail confirmed:
+```
+HTTP/1.1 200 OK
+Connection: close
+Accept-Ranges: bytes
+Content-Length: 20276
+
+<JPEG magic bytes>
+```
+No Content-Type. `aiohttp.response.content_type` then defaults to `"application/octet-stream"`, so any filter like `startswith("image/")` rejects every legitimate thumbnail. An earlier revision of patch 29b did this and broke all artwork. The 404 case for `image://DefaultVideo.png/` is caught by the status check alone; for a `200 + HTML body` edge case (if one ever exists), a magic-byte check would be the correct addition — not a content-type check.
+
+Also adds an `and self._media_image_url` guard to the `download_artwork` branch so a `thumbnail=None` state doesn't try to HTTP-GET an empty URL.
+
+**29c — Defensive guard on the SMB special-case branch.** The existing `if self._item["type"] == "movie" and "@smb" in thumbnail:` check at the same block would `TypeError` if `thumbnail` is now `None` (rare but possible after the patch 29a filter for a library movie whose `art["thumb"]` happened to be a `DefaultVideo.png`). Added an `and thumbnail` short-circuit.
+
+**Net effect:**
+- Unscraped local file (Seth Meyers case): integration emits empty → UC3 renders its own placeholder.
+- Netflix profile thumbnail (icon-with-real-URL): unchanged, still shown.
+- Netflix / plugin content whose only art is a `DefaultVideo.png` placeholder: now empty instead of broken.
+- Library movies: unchanged.
+- Video source files played through MediaBrowser: UI FW is tackling this separately via thumbnail handoff from `MediaBrowser.qml`; the integration-side change here means the FW-supplied preview isn't clobbered by a bad `MEDIA_IMAGE_URL` push.
+
+---
+
+## Patch 30: Sidecar Thumbnail Detection (Browse + Play)
+
+**Files:** `src/media_browser.py`, `src/kodi_device.py`
+
+**Problem:** MediaBrowser-initiated playback of a video file shows no thumbnail on the UC3 player widget, even when a real sidecar thumbnail file (`<basename>-thumb.jpg`, `<basename>.tbn`, folder-level `poster.jpg`, etc.) sits right next to the video on disk. Kodi-UI-initiated playback of the same file *does* show the thumbnail. The difference:
+
+- Kodi's own skin scans for sidecar files at browse time and primes in-memory `item` state before `Player.Open` fires. `Player.GetItem` then returns a rich `art` dict.
+- JSON-RPC-initiated `Player.Open({"file": path})` skips that skin-side scan. `Player.GetItem` returns `art = {"icon": "image://DefaultVideo.png/"}` and empty `thumbnail`, even though the sidecar is right there.
+
+Confirmed via direct probes against Kodi 21.3: `Files.GetDirectory` on a Sonarr-formatted folder returns empty `art: {}` and `thumbnail: ""` for every entry — including the sidecar JPEGs themselves. `Files.GetFileDetails` on the .mkv leaf returns the same useless `icon: DefaultVideo.png`. The sidecar detection is a skin-UI behavior, not a JSON-RPC contract.
+
+But: Kodi's `/image/` endpoint *does* serve any sidecar image path directly. `http://kodi:8080/image/image%3A%2F%2F%2Fhome%2F...%2Fepisode-thumb.jpg%2F` returns 200 + the thumbnail. So the fix is to replicate Kodi's skin-side sidecar scan in the integration.
+
+**Solution — two places the scan needs to run:**
+
+**30a — Browse-time (`src/media_browser.py`).** The Files.GetDirectory response already lists every file in the directory, including the sidecar JPEGs. Two module-level helpers (`_find_sidecar_for_file`, `_build_sidecar_map`) scan that listing and produce a `{video_file_path: sidecar_art_path}` map with **zero extra round-trips**. `get_item_from_file` has its `extract_thumbnail` bool replaced with an explicit `thumbnail_url: str | None` kwarg; all three callers (root `FILE` output at ~line 688, playlist at ~line 752, source sub-directory at ~line 823) pre-compute the URL using the sidecar map and pass it in. Picture-source browsing keeps its existing `get_thumbnail_from_file` path (the file itself IS the image). Playlist items stay thumbnail-less.
+
+**30b — Play-time (`src/kodi_device.py`).** After the patch 28/29 art resolution chain exhausts, check `self._item["file"]`. If it's a local/SMB/NFS path (not `plugin://`, `pvr://`, `http(s)://`, `upnp://`), do one `Files.GetDirectory` on the parent folder and run `media_browser._find_sidecar_for_file(candidate_file, dir_files)`. If it returns a sidecar path, synthesize the `image://<sidecar>/` URI and feed it into the existing `_kodi.thumbnail_url()` → `_media_image_url` path. One extra JSON-RPC round-trip at play-start, only when the primary art dict has nothing useful.
+
+**Sidecar conventions recognized** (priority order in `_find_sidecar_for_file`):
+
+Per-video (`<base>` = video path without extension):
+1. `<base>-thumb.jpg` (Sonarr/Radarr episode thumb)
+2. `<base>-poster.jpg`
+3. `<base>-landscape.jpg`
+4. `<base>.tbn` (Kodi native, legacy)
+5. `<base>.jpg` (plain basename match)
+
+Also `.jpeg`, `.png`, `.webp` accepted. Folder-level fallback (any of these in the same directory):
+- `poster.jpg`, `folder.jpg`, `cover.jpg`, `banner.jpg`, `thumb.jpg`, `fanart.jpg` — serves as the art for every video in the folder when no per-video sidecar exists.
+
+**Why this approach over ffmpeg frame extraction (`image://video@<path>/`):** Kodi *can* extract a frame from any readable video file via the `video@` prefix (verified — 200 OK with real JPEG). That was considered and rejected because users who deploy Sonarr/Radarr already have canonical, human-curated artwork sitting next to the files; a random extracted frame is strictly worse. If a file *doesn't* have a sidecar, the ffmpeg path could still be added as a last-resort fallback in a future patch without breaking this one.
+
+**Regressions considered (none triggered):**
+- Patch 28 fallback chain: runs BEFORE patch 30 at play time, so library items with proper `art` dict still resolve via the configured `artwork_type` first. Sidecar lookup only fires when the entire prior chain produced nothing.
+- Patch 29a placeholder filter: unaffected. `image://<sidecar-path>/` never starts with `image://Default`.
+- Patch 29b status check: applies as-is. If a candidate sidecar URL 404s somehow (race condition, file moved mid-session), the download path discards cleanly.
+- Playlist items (`.m3u` etc): no sidecar logic — they stay thumbnail-less as before.
+- Picture-source browsing: unchanged (pictures use `get_thumbnail_from_file(file_path)` directly because the file IS the image).
 
 ---
 
