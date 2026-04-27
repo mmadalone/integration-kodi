@@ -418,6 +418,11 @@ class SetupFlow:
                     )
                     set_setup_field(user_input.settings, "download_artwork", self._reconfigured_device.download_artwork)
                     set_setup_field(
+                        user_input.settings,
+                        "artwork_timeout_seconds",
+                        self._reconfigured_device.artwork_timeout_seconds,
+                    )
+                    set_setup_field(
                         user_input.settings, "disable_keyboard_map", self._reconfigured_device.disable_keyboard_map
                     )
                     set_setup_field(
@@ -615,6 +620,10 @@ class SetupFlow:
         artwork_type_tvshows = msg.input_values.get("artwork_type_tvshows", KODI_DEFAULT_TVSHOW_ARTWORK)
         media_update_task = msg.input_values.get("media_update_task", "false") == "true"
         download_artwork = msg.input_values.get("download_artwork", "false") == "true"
+        try:
+            artwork_timeout_seconds = int(msg.input_values.get("artwork_timeout_seconds", "12"))
+        except ValueError:
+            artwork_timeout_seconds = 12
         disable_keyboard_map = msg.input_values.get("disable_keyboard_map", "false") == "true"
         suppress_volume_overlay = msg.input_values.get("suppress_volume_overlay", "false") == "true"
         video_only_browse_filter = msg.input_values.get("video_only_browse_filter", "false") == "true"
@@ -716,6 +725,7 @@ class SetupFlow:
                 artwork_type_tvshows=artwork_type_tvshows,
                 media_update_task=media_update_task,
                 download_artwork=download_artwork,
+                artwork_timeout_seconds=artwork_timeout_seconds,
                 disable_keyboard_map=disable_keyboard_map,
                 suppress_volume_overlay=suppress_volume_overlay,
                 video_only_browse_filter=video_only_browse_filter,
@@ -766,6 +776,12 @@ class SetupFlow:
         browsing_files_sort = msg.input_values.get("browsing_files_sort", "")
         media_update_task = msg.input_values.get("media_update_task", "false") == "true"
         download_artwork = msg.input_values.get("download_artwork", "false") == "true"
+        try:
+            artwork_timeout_seconds = int(
+                msg.input_values.get("artwork_timeout_seconds", str(self._reconfigured_device.artwork_timeout_seconds))
+            )
+        except ValueError:
+            artwork_timeout_seconds = self._reconfigured_device.artwork_timeout_seconds
         disable_keyboard_map = msg.input_values.get("disable_keyboard_map", "false") == "true"
         suppress_volume_overlay = msg.input_values.get("suppress_volume_overlay", "false") == "true"
         video_only_browse_filter = msg.input_values.get("video_only_browse_filter", "false") == "true"
@@ -803,6 +819,7 @@ class SetupFlow:
         self._reconfigured_device.artwork_type_tvshows = artwork_type_tvshows
         self._reconfigured_device.media_update_task = media_update_task
         self._reconfigured_device.download_artwork = download_artwork
+        self._reconfigured_device.artwork_timeout_seconds = artwork_timeout_seconds
         self._reconfigured_device.disable_keyboard_map = disable_keyboard_map
         self._reconfigured_device.suppress_volume_overlay = suppress_volume_overlay
         self._reconfigured_device.video_only_browse_filter = video_only_browse_filter

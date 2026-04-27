@@ -60,6 +60,7 @@ class KodiConfigDevice:
     artwork_type_tvshows: str = field(default="tvshow.poster")
     media_update_task: bool = field(default=False)
     download_artwork: bool = field(default=False)
+    artwork_timeout_seconds: int = field(default=12)
     disable_keyboard_map: bool = field(default=False)
     suppress_volume_overlay: bool = field(default=False)
     suppress_media_browser: bool = field(default=False)
@@ -121,6 +122,21 @@ class KodiConfigDevice:
                 setattr(self, name, int(value))
             except (TypeError, ValueError) as ex:
                 raise ValueError(f"{name!r} must be an integer, got {value!r}") from ex
+
+        # Patch 40: artwork_timeout_seconds — clamp into a sane range (5-60s).
+        # Older configs without this field already received the default via the
+        # MISSING-default loop above; this block normalises any value coming
+        # from the setup flow (string in JSON) and rejects out-of-range input.
+        try:
+            self.artwork_timeout_seconds = int(self.artwork_timeout_seconds)
+        except (TypeError, ValueError) as ex:
+            raise ValueError(
+                f"'artwork_timeout_seconds' must be an integer, got {self.artwork_timeout_seconds!r}"
+            ) from ex
+        if not 5 <= self.artwork_timeout_seconds <= 60:
+            raise ValueError(
+                f"'artwork_timeout_seconds' must be between 5 and 60, got {self.artwork_timeout_seconds}"
+            )
 
         # Validate identity fields
         for name in ("id", "name", "address"):

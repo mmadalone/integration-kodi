@@ -1,5 +1,7 @@
 # CLAUDE.md -- Kodi Integration for UC Remote 3 (Patched Fork)
 
+DON'T BE SYCOPHANTIC
+
 ## Project Identity
 
 Patched fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (v1.18.13) for the **Unfolded Circle Remote 3**. Python 3.11 async integration driver using the `ucapi` library.
@@ -7,7 +9,7 @@ Patched fork of [albaintor/integration-kodi](https://github.com/albaintor/integr
 **Owner:** madalone
 **Device:** UC Remote 3 at `192.168.2.204`, PIN `6984`
 **Upstream:** `albaintor/integration-kodi` tag `v1.18.13`
-**Current tag:** `v1.18.13-madalone.3` (branch `v1.18.13-patched`)
+**Current tag:** `v1.18.13-madalone.5` (branch `v1.18.13-patched`)
 **Language:** Python 3.11 (async/await, `ucapi` 0.6.0, `aiohttp`, Kodi JSON-RPC)
 **Build toolchain:** `docker.io/unfoldedcircle/r2-pyinstaller:3.11.13-0.4.0`
 
@@ -100,7 +102,7 @@ Install the upstream release tar.gz from [albaintor/integration-kodi releases](h
 
 ## Current Patches
 
-All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is the source of truth). Summary below (35 patches as of `v1.18.13-madalone.3`):
+All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is the source of truth). Summary below (42 patches as of `v1.18.13-madalone.5`):
 
 | # | Name | Summary |
 |---|------|---------|
@@ -139,6 +141,13 @@ All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is 
 | 33 | `MODE_KEYPRESS_C` simple command | `Input.ButtonEvent(c, KB)` — routes through Kodi keymap (Harmony MENU parity: `contextmenu` globally, `queue` in `<FullscreenVideo>`) |
 | 34 | `MODE_CODEC_INFO` / `MODE_PLAYER_DEBUG` / `MODE_SYSTEM_MENU` simple commands | `codecinfo` / `playerdebug` / `GUI.ActivateWindow(shutdownmenu)` |
 | 35 | `MODE_KEYPRESS_ESC` simple command | `Input.ButtonEvent(escape, KB)` — routes through Kodi keymap (Esc-key behavior: close dialog / previous menu / stop / shutdown menu per window context) |
+| 36 | Partial-update emit semantic | Omit `MEDIA_IMAGE_URL` on transient fetch failure instead of emitting `""` (which destroys the remote's cached image). Removes the dead `_reset_media_artwork()` workaround + `is_starting_media`/`current_artwork` snapshots that supported it. |
+| 37 | Artwork-fetch retry budget | 3 attempts (delays 0/0.5/1.5s + ±20% jitter) inside `_fetch_artwork_with_retry()`. On exhaustion, schedules a deferred `_update_states(deferred=4)` retry. Replaces single-attempt fetch. |
+| 38 | Item-identity guard | Track `(id, file)` of the playing item; only nuke artwork state when item changes OR new thumbnail is non-None. Eliminates flicker from transient `art={}` on PVR/plugin sources. |
+| 39 | Magic-byte MIME sniff | Override `application/octet-stream` (Kodi omits Content-Type, aiohttp falls back) with correct `image/jpeg`/`png`/`webp`/`gif` from buffer magic bytes. Defaults to `image/jpeg` for unknown bytes — Qt rejects unknown declared MIME outright but tolerates declared-MIME mismatch. |
+| 40 | Shared `ClientSession` + configurable artwork timeout | Single `aiohttp.ClientSession` per device (lifecycle = connect/disconnect) instead of per-fetch construction. New `artwork_timeout_seconds` setup field (range 5-60, default 12s, was 5s hardcoded). `UPDATE_LOCK_TIMEOUT` 10→30s to accommodate worst-case retry budget. |
+| 41 | Subscribe-time refresh | `on_subscribe_entities` schedules `_post_subscribe_refresh` for media_player entities. Helper waits (via `events.once` + `asyncio.Future` + 30s timeout) for next `Events.UPDATE` from the device, then re-pushes `filter_attributes(device.attributes)`. Originally added to address blank-artwork-after-reinstall — turned out to be a firmware bug fixed in **UC-Remote-UI v1.4.10**; patch 41 is now redundant on v1.4.10+ firmware but retained as a harmless no-op for older firmware. See "Post-mortem" in `KODI-INTEGRATION-PATCHES.md`. |
+| 42 | Deferred-retry actually retries | Adds `_artwork_pending_retry` flag + `_retry_pending` term to the artwork-block guard. Without it, the deferred re-poll scheduled on artwork-fetch failure was self-skipping (because `_thumbnail` had already been mutated by the failed attempt, so `_thumbnail_real_change` was false). The flag is set on fetch failure and cleared on success or genuine no-art state — letting both the explicit deferred retry and the natural watchdog cadence drive recovery. |
 
 **Dropped pre-release (v1.18.13-madalone.2):** `suppress_media_browser`, `suppress_shuffle`, `suppress_repeat` were drafted as integration-side feature-removal toggles. Pulled after diagnosis showed the feature list doesn't re-propagate to already-subscribed UC3 entities. UX for these now lives in UC-Remote-UI `Config.showMediaBrowserButton` / `showShuffleButton` / `showRepeatButton` (v1.4.2+). Dataclass fields retained as silent no-ops for config backward-compat.
 

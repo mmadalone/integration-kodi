@@ -116,6 +116,83 @@ async def on_exit_standby() -> None:
         # _LOOP.create_task(configured.connect())
 
 
+async def _post_subscribe_refresh(device_id: str, entity_id: str, timeout: float = 30.0) -> None:
+    """Patch 41: handle the subscribe-during-initial-connect race.
+
+    `on_subscribe_entities` pushes `device.attributes` synchronously when the
+    activity card opens. If the integration is mid-initial-connect (e.g. just
+    after a reinstall), `_media_image_data` / `_media_image_url` are still
+    empty — so the synchronous push ships `MEDIA_IMAGE_URL=""` and the remote
+    blanks the artwork.
+
+    The first `_update_states()` to complete will emit Events.UPDATE → driver
+    `on_device_update` will propagate via `api.configured_entities.update_attributes`,
+    which is the canonical fix path. This helper is belt-and-braces for the
+    timing-sensitive corner case where the late propagation doesn't actually
+    stick on the new subscriber. We register a one-shot listener for the next
+    Events.UPDATE from the device, then re-push the full attribute snapshot to
+    the just-subscribed entity. Bounded by `timeout` so a permanently-idle
+    integration doesn't leak the listener.
+    """
+    _LOG.debug("[patch41] _post_subscribe_refresh entered: device=%s entity=%s", device_id, entity_id)
+    if device_id not in _configured_kodis:
+        _LOG.debug("[patch41] device %s not in _configured_kodis — bail", device_id)
+        return
+    device = _configured_kodis[device_id]
+
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+
+    def _on_next_update(*_args: Any, **_kwargs: Any) -> None:  # noqa: ANN001
+        if not fut.done():
+            fut.set_result(None)
+
+    device.events.once(kodi_device.Events.UPDATE, _on_next_update)
+    _LOG.debug("[patch41] one-shot Events.UPDATE listener registered, waiting up to %.1fs", timeout)
+
+    try:
+        await asyncio.wait_for(fut, timeout=timeout)
+        _LOG.debug("[patch41] Events.UPDATE arrived, proceeding to re-push attributes")
+    except asyncio.TimeoutError:
+        # No emission within the window — integration is idle (no playback) or
+        # stuck. Either way, nothing to re-push. The pyee `once` listener is
+        # already removed at this point because it self-removes on first fire;
+        # if it didn't fire, it stays registered. Remove it manually.
+        _LOG.debug("[patch41] timed out waiting for Events.UPDATE; abandoning")
+        try:
+            device.events.remove_listener(kodi_device.Events.UPDATE, _on_next_update)
+        except (KeyError, ValueError):
+            pass
+        return
+
+    # Re-push the current snapshot. on_device_update handled the partial-delta
+    # emit already, but the new subscriber's view of the entity may have been
+    # cached from the synchronous (empty) push in on_subscribe_entities. This
+    # second push overwrites that.
+    configured_entity = api.configured_entities.get(entity_id)
+    if configured_entity is None:
+        _LOG.debug("[patch41] configured_entity not found for %s — bail", entity_id)
+        return
+    if isinstance(configured_entity, media_player.KodiMediaPlayer):
+        attrs = filter_attributes(device.attributes, ucapi.media_player.Attributes)
+        # Mask the data URI body so logs stay readable; just show MIME prefix + length.
+        mip = attrs.get(ucapi.media_player.Attributes.MEDIA_IMAGE_URL.value, "")
+        if isinstance(mip, str) and mip.startswith("data:"):
+            semi = mip.find(";")
+            mip_disp = f"<data URI mime={mip[5:semi] if semi > 0 else '?'!r} len={len(mip)}>"
+        elif isinstance(mip, str) and mip:
+            mip_disp = f"<URL len={len(mip)}>"
+        else:
+            mip_disp = "<EMPTY>"
+        _LOG.debug(
+            "[patch41] re-pushing media_player attributes for %s; media_image_url=%s; total_keys=%d",
+            entity_id, mip_disp, len(attrs),
+        )
+        api.configured_entities.update_attributes(entity_id, attrs)
+    else:
+        _LOG.debug("[patch41] entity %s is not a KodiMediaPlayer — skipping re-push", entity_id)
+
+
 @api.listens_to(ucapi.Events.SUBSCRIBE_ENTITIES)
 async def on_subscribe_entities(entity_ids: list[str]) -> None:
     """
@@ -138,6 +215,13 @@ async def on_subscribe_entities(entity_ids: list[str]) -> None:
                 api.configured_entities.update_attributes(
                     entity_id, filter_attributes(device.attributes, ucapi.media_player.Attributes)
                 )
+                # Patch 41: schedule a follow-up refresh that waits for the
+                # next state-update emission and re-pushes the snapshot. Closes
+                # the subscribe-during-initial-connect race that produced
+                # blank artwork on first activity-card open after reinstall.
+                asyncio.create_task(
+                    _post_subscribe_refresh(device_id, entity_id)
+                ).add_done_callback(_log_task_exception)
             elif isinstance(entity, remote.KodiRemote):
                 api.configured_entities.update_attributes(
                     entity_id, {ucapi.remote.Attributes.STATE: remote.KODI_REMOTE_STATE_MAPPING.get(state)}

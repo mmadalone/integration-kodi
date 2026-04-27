@@ -896,6 +896,363 @@ Rebased `v1.18.7-patched` onto upstream `main` at tag `v1.18.13` — 6 unique up
 
 ---
 
+## Patch 36: Partial-Update Emit Semantic on Artwork-Fetch Failure
+
+**File:** `src/kodi_device.py`, `_update_states()` artwork-emit block + `__init__()` + removal of `_reset_media_artwork()` and the `is_starting_media`/`current_artwork` snapshots that supported it.
+
+**Problem:** When the artwork download path (`download_artwork=true`) failed, the integration emitted `MEDIA_IMAGE_URL=""` to the remote. Diagnosed against UC Remote 3 firmware `0.38.4-32-g1266974` (pre-v1.4.9): the firmware's QML `Image` element interprets empty `source` as "clear the rendered image" — so a single transient HTTP fetch failure (timeout, transient 5xx, brief network blip) blanks the artwork on screen. Subsequent watchdog polls hit `thumbnail == self._thumbnail` and skip the entire artwork block, so the empty state is sticky until the playing media item changes.
+
+The ucapi protocol semantics confirmed via `core-api/integration-api` AsyncAPI spec and the `integration-python-library` log-masker (which filters `data:` prefixes, confirming first-class data URI support): the `entity_change` message is a partial state delta. **Omitting an attribute is the canonical "no change" signal.** Emitting `""` is destructive — it actively replaces the previous value.
+
+The integration was therefore fighting the protocol's natural retention semantic: a failed fetch should be invisible to the remote (omit), not destructive (emit empty).
+
+Compounding this: the prior code path also pre-cleared `self._media_image_data = ""` before attempting the download, so even a momentary glance at the state mid-download would have shown empty data. And it called `_reset_media_artwork()` from the `is_starting_media + same-art` branch — a workaround for an old remote-firmware bug that re-emitted the *current* `media_artwork` value (a no-op given ucapi's deduplication). With the omit-on-failure semantic in place, the workaround is both unnecessary (the failure case it tried to recover from no longer exists) and harmful (it would re-emit on a transient empty state).
+
+**Fix:**
+
+1. **Replace emit-empty with omit on failure.** When `_fetch_artwork_with_retry()` (patch 37) returns `None`, do *not* add `MEDIA_IMAGE_URL` to `updated_data`. The remote retains its previously-loaded image. Schedule a deferred `_update_states(deferred=4)` retry so a longer-term recovery still happens.
+2. **Don't pre-clear `_media_image_data`.** The download branch now owns the entire write decision: success → overwrite, failure → retain prior, genuine no-art → explicit clear.
+3. **Remove `_reset_media_artwork()` entirely** along with its sole call site and the `current_artwork` / `is_starting_media` setup that supported it. Verified no external callers via grep.
+4. **Genuine no-art paths preserved.** `on_stop()` (`kodi_device.py:471`) and the no-players branch (`kodi_device.py:1417-1453` of v1.18.13-madalone.3) still explicitly emit `""` because those are deliberate clears, not failure paths. This is correct — playback genuinely ended, the remote should blank.
+
+**Why not pyscript-style "send empty to clear"?** Because ucapi's protocol doesn't distinguish "clear" from "no update" semantically — there's no special sentinel. The convention is: emit a real value when state changes, omit when it doesn't, emit `""` only when the actual *intended* state is empty (no media playing). Patch 36 aligns with the protocol; the prior code violated it.
+
+**Behavioural impact:**
+- Sticky-blank dropout (the user-facing symptom logged on 2026-04-26) eliminated.
+- Subscribe-time staleness reduced as a side effect — with `_media_image_data` no longer being cleared on transient failure, the cache held by the integration is more likely to be accurate when the remote re-subscribes.
+- No behaviour change for genuine no-media states.
+
+**Breaking changes flagged:** none observable. Empty-string emission was always destructive; omit semantics is the protocol-correct path.
+
+---
+
+## Patch 37: Exponential-Backoff Retry on Artwork Fetch
+
+**File:** `src/kodi_device.py`, new method `_fetch_artwork_with_retry()`.
+
+**Problem:** Pre-v1.18.13-madalone.4, the `download_artwork=true` path made a *single* HTTP attempt with a hardcoded 5 s timeout. Any transient failure — timeout (often hit on slow Kodi instances serving thumbnails to their own UI under load), brief 5xx, network jitter — produced a blank emission with no recovery until the playing media item changed. UC Remote 3 firmware `0.38.4-32-g1266974` provides **zero retry budget for the base64 path** — the 3-retry budget at `mediaPlayer.cpp:850-856` (3 × 15 s) only fires for HTTP-URL mode (`download_artwork=false`). The integration is therefore the sole resilience layer for download-mode users until firmware reaches v1.4.9.
+
+Combined with patch 36's omit-on-failure: a permanent fetch failure now correctly retains the prior good image, but a *transient* failure should still recover quickly without waiting for the next item change.
+
+**Fix:** New async method `_fetch_artwork_with_retry(url) -> str | None` that:
+
+- Makes 3 attempts at delays `0.0 / 0.5 / 1.5` seconds (constant `ARTWORK_FETCH_RETRY_DELAYS = (0.0, 0.5, 1.5)` at module level). Up to ±20 % jitter on the non-zero delays so concurrent failures against the same Kodi instance don't synchronise.
+- Each attempt subject to the per-device timeout from `KodiConfigDevice.artwork_timeout_seconds` (patch 40), applied via `aiohttp.ClientTimeout(total=…)`.
+- Patch 29b's HTTP 200 status check retained. Non-200 responses (Kodi 404 + HTML body for unresolvable `image://` URIs, etc.) are skipped with a debug log; the retry loop tries again, but a stable 404 will simply consume all 3 attempts and return `None`.
+- Retains exception types from the prior code (`ClientError`, `asyncio.TimeoutError`, `OSError`) — wider than the original `Exception` catch, narrower than the lint trigger.
+- On exhaustion: warn-level log including the last exception, return `None`.
+
+**Worst-case lock hold:** `3 × ARTWORK_TIMEOUT + sum(delays) ≈ 38 s` with the default 12 s timeout — handled by patch 40's `UPDATE_LOCK_TIMEOUT` raise (10 → 30 s).
+
+**Idempotent under cancellation:** aiohttp respects asyncio cancellation cleanly; a watchdog-cancelled fetch leaves no resource leak. Caller (patch 36) schedules a deferred re-poll on `None` return so that beyond-budget failures still recover eventually.
+
+**Why inline backoff instead of `aiohttp-retry` or `backoff`?** PyInstaller bundles every dependency. Adding a library for ~30 lines of well-bounded retry logic doubled the code's transitive dep surface for no benefit. The fork's existing `random.uniform()` + `asyncio.sleep()` patterns (e.g. patch 17's reconnect jitter) cover the same ground without dependency growth. Officially: aiohttp's docs and Anthropic-style backoff guidance both say either approach is acceptable; the deciding factor is bundle weight.
+
+**Breaking changes flagged:** none. The retry budget is additive on top of the existing single-attempt fetch.
+
+---
+
+## Patch 38: Item-Identity Guard Against Transient `art={}` from Kodi
+
+**File:** `src/kodi_device.py`, `_update_states()` (replaces the unconditional `if thumbnail != self._thumbnail:` reset block) + `__init__()` (`_last_item_identity`).
+
+**Problem:** Each watchdog tick (~10 s ±25 %) calls `Player.GetItem` and re-extracts `art`. Kodi sometimes returns an empty / partial `art={}` mid-playback for the *same* playing item — particularly visible on:
+
+- PVR live channel transitions (EPG cycles on the hour/half-hour),
+- Plugin sources still scraping (Netflix/YouTube/Movistar+ lazy-fetch art async),
+- Library items mid-scrape after a fresh import,
+- Buffer hiccups during demanding I/O.
+
+When `art` is empty, patch 28's fallback chain finds nothing and `thumbnail` resolves to `None`. Pre-patch-38, that triggered the unconditional reset block (`thumbnail != self._thumbnail` was True because `None ≠ "previous URL"`), nuking `_media_image_url`, `_media_image_data`, and emitting an empty `MEDIA_IMAGE_URL` — observed as a flicker on the remote. The next poll usually got real `art` back and re-emitted the URL, restoring the image, but the visible flicker is the symptom.
+
+**Fix:** Track item-identity tuple `(self._item.get("id"), self._item.get("file") or "")` in `self._last_item_identity` (initialised to `(None, "")`). Compare each poll:
+
+```python
+_item_identity = (self._item.get("id"), self._item.get("file") or "")
+_item_changed = _item_identity != self._last_item_identity
+self._last_item_identity = _item_identity
+
+# Only treat thumbnail change as real if the new value is non-None OR the item shifted
+_thumbnail_real_change = thumbnail != self._thumbnail and (
+    thumbnail is not None or _item_changed
+)
+```
+
+The reset block now fires only when `_thumbnail_real_change` is True. Concretely:
+
+| State change | Before patch 38 | After patch 38 |
+|---|---|---|
+| Same item, art={} → None | reset (flicker) | ignore (retain prior) |
+| Same item, real new URL | reset (correct) | reset (correct) |
+| New item (id/file shift), art={} → None | reset | reset (genuine clear) |
+| New item, real new URL | reset (correct) | reset (correct) |
+| Same item, same URL | no-op | no-op |
+
+**Why `(id, file)` and not just `id`?** Some Kodi content types (PVR EPG entries, plugin sources without scraped IDs) return `id=0` repeatedly; the `file` URL distinguishes them. Conversely, library items have a stable `id` but Kodi may transiently return `file=""`; the `id` distinguishes those. Tuple comparison handles both correctly.
+
+**Edge cases verified:**
+- First-ever poll: `_last_item_identity = (None, "")` initial value vs. real item's `(id, file)` produces a real change (correct: integration just connected, full state needed).
+- Stop event clears `self._item={}` via `on_stop()` (`kodi_device.py:445-472`), then the next play repopulates it; `_last_item_identity` correctly tracks that as an item change.
+- Item field rename (e.g. Kodi normalises path separators on a re-mount): `(id, file)` may produce a false-positive item-change. Acceptable — that's a real metadata mutation worth resetting for.
+
+**Breaking changes flagged:** transient `art={}` mid-playback no longer blanks artwork. This is the *intended* behaviour (no user-facing regression — the previous flicker was a bug, not a feature).
+
+---
+
+## Patch 39: Magic-Byte MIME Sniff for `download_artwork` Data URIs
+
+**File:** `src/kodi_device.py`, new static method `_sniff_mime()`. Called from `_fetch_artwork_with_retry()` (patch 37).
+
+**Problem:** Kodi's HTTP server omits the `Content-Type` header on thumbnail responses. Pre-patch-39, the integration constructed the data URI as:
+
+```python
+"data:" + response.content_type + ";base64," + base64.b64encode(buffer).decode("utf-8")
+```
+
+`aiohttp.response.content_type` defaults to `"application/octet-stream"` when the upstream omits the header. The resulting data URI looks like `data:application/octet-stream;base64,<JPEG bytes>`. Qt's QML `Image` element + data: URI loader dispatch on the *declared* MIME type (per `QImageReader` docs and Qt forum threads), not on byte sniffing. So a `data:application/octet-stream` URI is silently rejected by the remote regardless of the actual content.
+
+This explains why `download_artwork=true` artwork sometimes "doesn't render" on the installed firmware even when the fetch succeeds — the bytes are correct, the MIME declaration kills the image.
+
+(The patch 29b commentary in v1.18.13-madalone.2 noted this: *"Kodi omits the [Content-Type] header entirely for real images, so aiohttp defaults to `application/octet-stream`."* That commentary correctly identified the cause but the fix was deferred.)
+
+**Fix:** Sniff the buffer's magic bytes before constructing the data URI:
+
+```python
+@staticmethod
+def _sniff_mime(buffer: bytes) -> str:
+    if buffer[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if buffer[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if len(buffer) >= 12 and buffer[:4] == b"RIFF" and buffer[8:12] == b"WEBP":
+        return "image/webp"
+    if buffer[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    return "image/jpeg"
+```
+
+**Why default to `image/jpeg` for unknown bytes?** Qt is forgiving of declared-MIME mismatch — if you declare `image/jpeg` but ship PNG bytes, `QImageReader` falls back to autodetection at decode time. But Qt outright rejects unknown declared types. So `image/jpeg` is the safest "I don't know" default. (Patch 29b's 200-status check still filters non-image responses upstream, so we shouldn't actually get here with non-image bytes.)
+
+**Why not call `imghdr` / `filetype` / `Pillow`?** Three reasons:
+1. `imghdr` was removed from Python 3.13 stdlib; relying on it is technical debt.
+2. `filetype` is a 200 KB dep for what is genuinely 4 magic-byte comparisons.
+3. `Pillow` is multi-megabyte and overkill.
+
+This is exactly the "tried-and-tested approach" line: 4 magic-byte signatures cover >99 % of realistic web image formats; defaults handle the rest.
+
+**Breaking changes flagged:** images that previously failed to render on the remote firmware due to the `application/octet-stream` MIME now render. No regression possible — the new declared MIME is *more* correct than the old one.
+
+---
+
+## Patch 40: Shared `aiohttp.ClientSession` + Configurable Artwork Timeout
+
+**Files:** `src/kodi_device.py` (`__init__` / `connect` / `_clear_connection`); `src/config.py` (`artwork_timeout_seconds` field + `__post_init__` coercion); `src/setup_fields.py` (number field); `src/setup_flow.py` (5 touch-points per the documented config pattern).
+
+**Problem (a) — per-call session construction:** the prior code used `async with ClientSession() as session:` inside `_update_states()` for every artwork fetch. aiohttp's official guidance is one `ClientSession` per app/device — per-call construction loses connection pooling, pays TLS/connect overhead each time, and makes `keepalive` ineffective. On a busy device polling every ~10 s, this is meaningful.
+
+**Problem (b) — hardcoded 5 s timeout:** `ARTWORK_TIMEOUT = 5.0` was the only knob, and it was a module-level constant. Slow Kodi instances (RPi3-class hardware, NAS-served thumbnails, busy CPUs) hit the timeout legitimately under load. Users had no recourse.
+
+**Problem (c) — patch 37's retry budget:** the worst-case lock hold (`3 × timeout + 2 s backoff`) needs to be accommodated by `UPDATE_LOCK_TIMEOUT` so that the watchdog doesn't abandon legitimate just-slow fetches.
+
+**Fix:**
+
+1. **Shared session.** `self._artwork_session: ClientSession | None` initialised in `__init__()`, created lazily in `connect()` after `self._kodi_connection.connect()` (so the event loop is guaranteed to be running), closed in `_clear_connection()` with a guarded try/except. Lifecycle matches the existing `_kodi_connection` pattern.
+
+2. **Configurable timeout.** New `KodiConfigDevice.artwork_timeout_seconds: int = field(default=12)` with range validation (5-60 s) in `__post_init__`. Backward-compatible: configs without the field receive the default via the existing MISSING-default coercion loop.
+
+3. **Setup-flow integration.** Number field added in `setup_fields.py` (positioned after the `download_artwork` checkbox — logical adjacency since it's only used in download mode). Five touch-points wired in `setup_flow.py` per the established pattern: initial parse, device creation, reconfig parse, reconfig assign, reconfig pre-populate. All handle the type-coercion failure gracefully (default fallback for new setup, retain previous value for reconfig).
+
+4. **`UPDATE_LOCK_TIMEOUT` 10 s → 30 s.** Sized to accommodate worst-case retry budget without abandoning legitimate just-slow Kodi instances. The existing warning log line at `kodi_device.py:939` ("Update states lock acquisition timed out, skipping") still fires for genuinely-stuck polls — just at a more permissive threshold.
+
+5. **`ARTWORK_TIMEOUT` constant retained as fallback.** Bumped to `12.0` to match the new default. Used as a sensible default by any future code path that needs an artwork-fetch budget without a device handle, but the live fetch path now uses the per-device value via `aiohttp.ClientTimeout`.
+
+**Lifecycle robustness:**
+- `connect()` checks `is None or closed` before creating; idempotent across reconnects.
+- `_clear_connection()` close is guarded against `ClientError`/`OSError` so a session-close failure never prevents the rest of the reset.
+- `_artwork_session = None` after close, so a subsequent re-`connect()` recreates cleanly.
+- `_fetch_artwork_with_retry()` checks `is None or closed` defensively and returns `None` (which patch 36 handles as "omit"); shouldn't normally happen but guards against partially-torn-down state.
+
+**Breaking changes flagged:**
+- Existing configs missing `artwork_timeout_seconds` get the default 12 s on next load via dataclass coercion. No setup re-run required.
+- Lock-timeout doubled — longer max hold of `_update_lock`. Acceptable trade-off; users who notice missing watchdog ticks can lower their `artwork_timeout_seconds` or disable `download_artwork`.
+- New setup field; additive only. No existing field renamed or removed.
+
+---
+
+## Patch 41: Subscribe-Time Refresh (post-`v1.18.13-madalone.4` hotfix)
+
+**File:** `src/driver.py`, new helper `_post_subscribe_refresh()` + one extra task spawn in `on_subscribe_entities`.
+
+**Problem reported by user (after deploying `v1.18.13-madalone.4`):**
+
+> at first we get no artwork on the remote display. but if i close the activity card and open it again i get it. … this seems to only happen after reinstalling the integration
+
+The "after reinstall" qualifier is the smoking gun. Live websocket capture against `ws://192.168.2.204/ws` (subscribed to channel `all`, 90 s during steady-state playback of an episode with artwork) confirmed:
+
+- `media_title` (re-flush of unchanged value) and `media_position` (rolling) were emitted every ~5 s.
+- `media_image_url` was **never** re-emitted at steady state — which is the correct patch-36 omit-on-no-change behavior.
+
+So the bug isn't in steady-state emission. It's the subscribe path during initial connect:
+
+1. After reinstall, `_configure_new_device` (`driver.py:315-348`) creates the `KodiDevice` instance, registers `Events.UPDATE` listener, stores in `_configured_kodis`, and fires `device.connect()` as a background task.
+2. User opens activity card. `on_subscribe_entities` finds the device in `_configured_kodis` and synchronously calls `device.attributes`. The `attributes` property (`kodi_device.py:1665+`) reads `self.media_artwork`, which in download mode returns `self._media_image_data` — `""` at this point (initial state from `__init__`).
+3. Empty `MEDIA_IMAGE_URL` is shipped to the new subscriber.
+4. The first `_update_states()` eventually completes (worst case ~38 s with patch 37's retry budget), `_thumbnail_real_change` is True, the artwork block fetches and emits `Events.UPDATE` with the populated `MEDIA_IMAGE_URL`.
+5. `on_device_update` (`driver.py:255-288`) receives that, calls `filter_attributes(update, ucapi.media_player.Attributes)`, and pushes via `api.configured_entities.update_attributes`.
+
+Step 5 *should* unstick the new subscriber. The firmware session (UC-Remote-UI commit `1266974`) confirmed the late `entity_change` is processed correctly at the C++/QML layer (no preview-preserve-eats-the-update issue). But the user observed the symptom persisting until close+reopen, which means the late propagation isn't reliably overwriting the empty value the synchronous push set into ucapi's internal store. Whether that's a ucapi-internal cache, a delivery-ordering quirk on the wire, or something else, it's outside this fork's reach to fix at the source.
+
+**Fix:** add a belt-and-braces second push that runs only on subscribe, bounded by a single `Events.UPDATE` wait or a 30 s timeout. New helper:
+
+```python
+async def _post_subscribe_refresh(device_id: str, entity_id: str, timeout: float = 30.0) -> None:
+    if device_id not in _configured_kodis:
+        return
+    device = _configured_kodis[device_id]
+
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+
+    def _on_next_update(*_args, **_kwargs):
+        if not fut.done():
+            fut.set_result(None)
+
+    device.events.once(kodi_device.Events.UPDATE, _on_next_update)
+
+    try:
+        await asyncio.wait_for(fut, timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            device.events.remove_listener(kodi_device.Events.UPDATE, _on_next_update)
+        except (KeyError, ValueError):
+            pass
+        return
+
+    configured_entity = api.configured_entities.get(entity_id)
+    if configured_entity is None:
+        return
+    if isinstance(configured_entity, media_player.KodiMediaPlayer):
+        api.configured_entities.update_attributes(
+            entity_id, filter_attributes(device.attributes, ucapi.media_player.Attributes)
+        )
+```
+
+In `on_subscribe_entities`, after the synchronous push for media_player entities:
+
+```python
+asyncio.create_task(
+    _post_subscribe_refresh(device_id, entity_id)
+).add_done_callback(_log_task_exception)
+```
+
+**Why `events.once` instead of polling:** the `pyee.AsyncIOEventEmitter` `once` registration self-removes after first fire (zero overhead in the common case). The `asyncio.wait_for` + 30 s timeout bounds the listener so a permanently-idle integration (no playback, no events) doesn't leak it. On timeout we explicitly remove the listener as a defensive cleanup — `pyee` raises `KeyError`/`ValueError` if the listener was already removed, which is fine.
+
+**Why the second push is safe:** ucapi's `update_attributes` is idempotent for unchanged values (partial-update protocol). If the first poll's emission via `on_device_update` already updated the new subscriber correctly, the second push is a no-op. If it didn't, the second push overwrites with the current snapshot — which by then includes the populated `MEDIA_IMAGE_URL`. Worst case: one extra micro-message per subscribe.
+
+**Breaking changes flagged:** none. The push happens at most once per subscribe, bounded by 30 s; the wire protocol shape is identical to existing pushes; no new attribute fields, no schema changes.
+
+---
+
+## Patch 42: Deferred-Retry Actually Retries (post-`v1.18.13-madalone.4` hotfix)
+
+**File:** `src/kodi_device.py`, new `_artwork_pending_retry` flag in `__init__`, gating term on the artwork block, set/clear arms in the fetch-outcome branches.
+
+**Problem (found while tracing patch 41):**
+
+Patch 36's `_artwork_fetch_failed` branch scheduled a deferred re-poll at +4 s:
+
+```python
+if _artwork_fetch_failed:
+    asyncio.create_task(self._update_states(deferred=4)).add_done_callback(...)
+```
+
+But the entry guard for the artwork block was just `_thumbnail_real_change` (patch 38), which evaluates to *False* on the deferred re-poll because:
+
+1. The first attempt (the one that just failed) executed `self._thumbnail = thumbnail` and `self._media_image_url = self._kodi.thumbnail_url(thumbnail) or ""` at the top of the block, before the fetch was attempted.
+2. The deferred re-poll runs 4 s later, reads the same `_item` from Kodi, computes the same `thumbnail`, and finds `thumbnail == self._thumbnail`. So `_thumbnail_real_change == False` and the artwork block is *skipped entirely* — no retry attempt happens.
+3. `_media_image_data` stays `""` (omit-on-failure semantic from patch 36) until the playing item id/file actually shifts, by which point a new `thumbnail` triggers the block again from scratch.
+
+The natural watchdog cadence (every ~10 s) hits the same skip path. So patch 36's omit-on-failure was retain-empty-forever in practice for any URL that failed all 3 inline retries on first attempt.
+
+This isn't the cause of the user's reinstall symptom (different mechanism, addressed by patch 41), but it weakens patch 37's stated resilience claim and would manifest as sticky-blank artwork for any genuinely-flaky Kodi.
+
+**Fix:** track a separate "fetch failed and needs retry" flag, and widen the artwork block's entry condition.
+
+```python
+# __init__
+self._artwork_pending_retry: bool = False
+
+# _update_states artwork block
+_retry_pending = (
+    self._artwork_pending_retry
+    and self._device_config.download_artwork
+    and bool(self._media_image_url)
+)
+_should_run_artwork_block = _thumbnail_real_change or _retry_pending
+
+if _should_run_artwork_block:
+    if _thumbnail_real_change:
+        self._thumbnail = thumbnail
+        self._media_image_url = self._kodi.thumbnail_url(thumbnail) or ""
+    # ... SMB special case unchanged ...
+    if self._device_config.download_artwork:
+        if self._media_image_url:
+            _new_data = await self._fetch_artwork_with_retry(self._media_image_url)
+            if _new_data is None:
+                _artwork_fetch_failed = True
+                self._artwork_pending_retry = True   # arm flag
+            else:
+                self._media_image_data = _new_data
+                self._artwork_pending_retry = False  # success clears
+                updated_data[MediaAttr.MEDIA_IMAGE_URL] = self.media_artwork
+        else:
+            self._media_image_data = ""
+            self._artwork_pending_retry = False      # genuine no-art clears
+            updated_data[MediaAttr.MEDIA_IMAGE_URL] = ""
+    else:
+        self._artwork_pending_retry = False          # URL mode clears
+        updated_data[MediaAttr.MEDIA_IMAGE_URL] = self.media_artwork
+```
+
+**Why a flag and not just `_media_image_data == ""`:** in URL mode the data field is always empty (the integration ships URLs, not data URIs), so checking emptiness would falsely arm the retry on every URL-mode poll. The flag is download-mode-specific and only set on actual fetch failure.
+
+**Why retain `_thumbnail` mutation in the `_thumbnail_real_change` branch only:** during a retry the URL hasn't changed, only the data fetch needs to be re-attempted. We don't want to re-run the SMB special-case URL-massaging or thumbnail bookkeeping for the same URL.
+
+**Recovery cadence:**
+- The existing patch-37 deferred re-poll at +4 s now works (block actually runs).
+- Watchdog ticks (every ~10 s ±25%) also retry naturally while the flag is set.
+- Each entry runs the full inline 3-attempt budget (delays 0/0.5/1.5 s + per-attempt timeout from `artwork_timeout_seconds`), so a permanently-broken URL stabilizes at `_artwork_pending_retry=True` and consumes ~38 s of fetch time per watchdog tick. That's noisy but bounded; if it becomes a problem, future work could add a max-retry counter.
+- Cleared on genuine media change (item id/file shifts → `_thumbnail_real_change=True`, the block re-enters from a clean state).
+
+**Breaking changes flagged:** none observable in the success path. The failure path now retries instead of silently giving up — strictly an improvement.
+
+---
+
+## Post-mortem: Patch 41 root cause (UC-Remote-UI v1.4.10, 2026-04-27)
+
+The user-visible symptom that motivated patch 41 — "blank artwork on first activity-card open after integration reinstall, fixed by close+reopen" — turned out to be three layered bugs on the firmware side, all on UC-Remote-UI commit `1266974` and earlier (i.e. all pre-v1.4.10). Triangulation chain:
+
+1. Integration emits `media_image_url=<data URI mime='image/jpeg' len=17211>` — confirmed via live ws capture against `/ws` channel `all`.
+2. UC core configured-entity store has the populated value — confirmed via `GET /api/entities/kodi_driver.main.media_player.madteevee.local`.
+3. Remote screen renders blank for 8+ minutes of kept-open card. Same data URI value the firmware had been ignoring is rendered correctly the moment the card is closed and reopened (synchronous subscribe-time push).
+
+The asymmetry — *subscribe push works, post-subscribe `entity_change` doesn't* — landed the bug firmware-side. The firmware-side root cause (per parallel UC-Remote-UI session, 2026-04-27):
+
+1. **Orphan `entityAdded` core-API signal**: `core.h:360` declared, `core.cpp:2142` emitted, `entityController.cpp` constructor never `QObject::connect`-ed it. Integration `NEW` events arrived but `m_entities` map stayed empty, so no future `CHANGE` event could find a target.
+2. **Silent early-return on unknown-entity CHANGE**: `entityController.cpp:430` dropped any `CHANGE` for an entity not yet in `m_entities`. Combined with (1), every late `entity_change` was silently dropped after a fresh integration install.
+3. **MediaComponent.qml missing `entityLoaded` listener**: when the QML mounted with `entityObj=null` (because `EntityController.load` was still in flight), nothing re-acquired the entity once load completed.
+
+Close+reopen worked because closing tore down the QML state and reopening re-ran `Activity.qml`'s `includedEntityItem` delegate, which calls `EntityController.load()` — by that time UC core had the populated state.
+
+**Fix shipped firmware-side: UC-Remote-UI v1.4.10** — reconnects the orphan signal, replaces the silent early-return with `load()` fallback, adds the missing `entityLoaded` listener to `MediaComponent.qml`. User-verified end-to-end on the UC Remote 3.
+
+### Status of integration patches 41/42 after v1.4.10
+
+- **Patch 41** (`_post_subscribe_refresh`): redundant on v1.4.10 firmware (which fixes the underlying delivery path correctly). Harmless no-op there because ucapi dedupes the second push when values are unchanged. Retained for users still on pre-v1.4.10 firmware.
+- **Patch 42** (`_artwork_pending_retry` flag): independent integration-side bug fix (the deferred-retry-doesn't-actually-retry issue). Load-bearing on any firmware. Retained.
+
+---
+
 ## Companion Firmware Fixes (remote-ui)
 
 These fixes live in the main UC-Remote-UI project, not in this integration directory. They address [UC firmware bug #364](https://github.com/unfoldedcircle/feature-and-bug-tracker/issues/364) which affects all media player integrations.

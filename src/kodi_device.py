@@ -30,7 +30,7 @@ from typing import (
 
 import jsonrpc_base
 import ucapi
-from aiohttp import ClientOSError, ClientSession, ServerTimeoutError
+from aiohttp import ClientError, ClientOSError, ClientSession, ClientTimeout, ServerTimeoutError
 from jsonrpc_base.jsonrpc import (  # pylint: disable = E0401
     ProtocolError,
     TransportError,
@@ -65,12 +65,23 @@ _R = TypeVar("_R", bound=ucapi.StatusCodes)
 _LOG = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 8.0
-ARTWORK_TIMEOUT = 5.0
+# Patch 40: ARTWORK_TIMEOUT is now a fallback / lower bound only; the per-device value
+# comes from KodiConfigDevice.artwork_timeout_seconds (default 12s, range 5-60s) and is
+# applied via aiohttp.ClientTimeout(total=…) in _fetch_artwork_with_retry. The constant
+# is retained so any future code path that needs an artwork-fetch budget without a
+# device handle still has a sensible default.
+ARTWORK_TIMEOUT = 12.0
+# Patch 40: artwork-fetch retry budget. 3 attempts with delays 0/0.5/1.5s + jitter, so
+# under pathological conditions the worst-case _update_lock hold is roughly
+# 3 × ARTWORK_TIMEOUT + sum(delays) ≈ 38s. UPDATE_LOCK_TIMEOUT raised from 10s → 30s
+# to match: a single watchdog tick should not abandon the lock while a legitimate
+# (just-slow) Kodi instance is still serving the artwork fetch.
+ARTWORK_FETCH_RETRY_DELAYS = (0.0, 0.5, 1.5)
 WEBSOCKET_WATCHDOG_INTERVAL = 10
 CONNECTION_RETRIES = 30
 UPDATE_POSITION_INTERVAL = 300
 UPDATE_STATE_RETRY = 2
-UPDATE_LOCK_TIMEOUT = 10.0
+UPDATE_LOCK_TIMEOUT = 30.0
 ERROR_OS_WAIT = 0.5
 
 
@@ -381,6 +392,23 @@ class KodiDevice(IKodiDevice):
         self._app_language: str | None = None
         self._chapter_update_task: Task | None = None
         self._media_browser = media_browser.MediaBrowser(self)
+        # Patch 40: shared aiohttp.ClientSession for artwork downloads (lifecycle
+        # tied to connect()/_clear_connection()). Avoids per-fetch TLS/connect
+        # overhead; aiohttp official guidance is one session per app/device.
+        self._artwork_session: ClientSession | None = None
+        self._artwork_timeout = ClientTimeout(total=float(device_config.artwork_timeout_seconds))
+        # Patch 38: item-identity tuple (id, file). Used to distinguish a genuine
+        # media change from Kodi briefly returning art={} for the same item
+        # (e.g. PVR EPG cycle, plugin source mid-scrape) so we don't blank
+        # _media_image_data on transient empties.
+        self._last_item_identity: tuple = (None, "")
+        # Patch 42: artwork-fetch retry-needed flag. Set when _fetch_artwork_with_retry
+        # exhausts its inline retry budget (returns None). Cleared on successful fetch
+        # or genuine no-art state. While set, the artwork block in _update_states is
+        # entered on every poll regardless of whether the thumbnail URL changed —
+        # so the natural watchdog cadence drives recovery instead of getting stuck
+        # because `self._thumbnail` was already mutated by the prior failed attempt.
+        self._artwork_pending_retry: bool = False
 
     async def init_connection(self):
         """Initialize connection to device."""
@@ -626,6 +654,15 @@ class KodiDevice(IKodiDevice):
                 await self._kodi_connection.close()
             except (OSError, TransportError, AttributeError) as ex:
                 _LOG.debug("[%s] Error closing connection during clear: %s", self.device_config.address, ex)
+        # Patch 40: tear down the shared artwork session alongside the Kodi
+        # connection. Recreated on next connect(). Defensive close: don't let
+        # a session-close failure propagate and prevent reset of other state.
+        if self._artwork_session is not None and not self._artwork_session.closed:
+            try:
+                await self._artwork_session.close()
+            except (ClientError, OSError) as ex:
+                _LOG.debug("[%s] Error closing artwork session: %s", self.device_config.address, ex)
+        self._artwork_session = None
 
     async def _ping(self):
         """Send websocket ping."""
@@ -740,6 +777,10 @@ class KodiDevice(IKodiDevice):
             # TODO report the fix
             await self._kodi_connection.connect()
             await self._register_callbacks()
+            # Patch 40: ensure the shared artwork session is alive for this connection's
+            # lifetime. Created here so the event loop is guaranteed to be running.
+            if self._artwork_session is None or self._artwork_session.closed:
+                self._artwork_session = ClientSession()
             await self._ping()
             await self._update_states()
             # Deferred re-poll: artwork may not be available immediately when connecting
@@ -912,12 +953,120 @@ class KodiDevice(IKodiDevice):
             return
         await self._update_states()
 
-    async def _reset_media_artwork(self):
-        """Emit artwork data only."""
-        updated_data = {MediaAttr.MEDIA_IMAGE_URL: self.media_artwork}
-        _LOG.debug("[%s] Emit of artwork %s", self.device_config.address, updated_data)
-        self.events.emit(Events.UPDATE, self.id, updated_data)
-        await asyncio.sleep(0)
+    # Patch 36: _reset_media_artwork() removed. The function emitted self.media_artwork
+    # (the *current* value) despite a comment claiming "send empty artwork to reset it",
+    # making it a no-op given ucapi's partial-update protocol (ucapi already deduplicates
+    # unchanged attribute values). Its sole caller — the `is_starting_media` block at the
+    # original line 1258 — was a workaround for an old remote bug. Patches 36/38 (omit
+    # MEDIA_IMAGE_URL on transient failure / item-identity guard) make the workaround
+    # both unnecessary and harmful, so the call site is removed in the same patch.
+
+    @staticmethod
+    def _sniff_mime(buffer: bytes) -> str:
+        """Patch 39: determine image MIME from magic bytes.
+
+        Kodi's HTTP server omits the Content-Type header on thumbnail responses, which
+        means aiohttp.response.content_type defaults to 'application/octet-stream'.
+        Qt's QML Image element + data: URI loader dispatch on the *declared* MIME type
+        (per QImageReader docs and Qt forum threads), so a data:application/octet-stream
+        URI is silently rejected by the remote. Sniff the magic bytes and declare the
+        correct image MIME.
+
+        Defaults to image/jpeg for unknown bytes — safer than octet-stream because Qt is
+        forgiving of declared-MIME mismatch (it'll fall back to QImageReader format
+        autodetection at decode time), but flat-out rejects unknown declared types.
+        """
+        if buffer[:3] == b"\xff\xd8\xff":
+            return "image/jpeg"
+        if buffer[:8] == b"\x89PNG\r\n\x1a\n":
+            return "image/png"
+        if len(buffer) >= 12 and buffer[:4] == b"RIFF" and buffer[8:12] == b"WEBP":
+            return "image/webp"
+        if buffer[:6] in (b"GIF87a", b"GIF89a"):
+            return "image/gif"
+        return "image/jpeg"
+
+    async def _fetch_artwork_with_retry(self, url: str) -> str | None:
+        """Patch 37: fetch an artwork URL with exponential-backoff retry.
+
+        Returns a base64 data URI (with the correct image/* MIME — patch 39) on success,
+        or None when all attempts fail. The integration is the sole resilience layer
+        for download_artwork=true on pre-firmware-v1.4.9 remotes (the firmware's 3-retry
+        budget only covers HTTP-URL mode, not base64 mode), so callers should respect
+        a None return as "do not emit MEDIA_IMAGE_URL this poll" — patch 36's omit-on-
+        failure semantic.
+
+        Retry budget: 3 attempts at delays 0.0 / 0.5 / 1.5 seconds (with up to ±20%
+        jitter on the non-zero delays), each attempt subject to the per-device timeout
+        (KodiConfigDevice.artwork_timeout_seconds, applied via aiohttp.ClientTimeout).
+        Worst-case lock hold: ~3 × timeout + 2 s backoff ≈ 38 s with the default 12 s
+        timeout. UPDATE_LOCK_TIMEOUT (30 s) is sized to accommodate this without
+        abandoning legitimate just-slow Kodi instances.
+
+        Idempotent under cancellation: aiohttp respects asyncio cancellation cleanly,
+        so a watchdog-cancelled fetch leaves no resource leak.
+        """
+        if self._artwork_session is None or self._artwork_session.closed:
+            # Should not normally happen — connect() initialises the session — but guard
+            # against re-entry from a partially-torn-down state.
+            _LOG.debug(
+                "[%s] artwork session unavailable; skipping fetch for %s",
+                self.device_config.address,
+                url,
+            )
+            return None
+
+        last_err: Exception | None = None
+        for attempt, delay in enumerate(ARTWORK_FETCH_RETRY_DELAYS, start=1):
+            if delay:
+                # Up to 20% jitter so concurrent retries against the same Kodi instance
+                # don't synchronise. Doesn't change worst-case budget meaningfully.
+                await asyncio.sleep(delay + random.uniform(0, 0.2 * delay))
+            try:
+                async with self._artwork_session.get(url, timeout=self._artwork_timeout) as resp:
+                    # Patch 29b's 200-status check, retained: Kodi returns 404 + HTML body
+                    # for unresolvable image:// URIs, and we must not base64-encode the
+                    # error page. Skip non-200 responses entirely so the retry loop can
+                    # try again — but a stable 404 will simply consume all 3 attempts.
+                    if resp.status != 200:
+                        _LOG.debug(
+                            "[%s] artwork attempt %d non-200 (status=%s url=%s)",
+                            self.device_config.address,
+                            attempt,
+                            resp.status,
+                            url,
+                        )
+                        continue
+                    buffer = b""
+                    async for data, _ in resp.content.iter_chunks():
+                        buffer += data
+                    if not buffer:
+                        _LOG.debug(
+                            "[%s] artwork attempt %d empty body (url=%s)",
+                            self.device_config.address,
+                            attempt,
+                            url,
+                        )
+                        continue
+                    mime = self._sniff_mime(buffer)
+                    return f"data:{mime};base64,{base64.b64encode(buffer).decode('utf-8')}"
+            except (ClientError, asyncio.TimeoutError, OSError) as ex:
+                last_err = ex
+                _LOG.debug(
+                    "[%s] artwork attempt %d failed (url=%s): %s",
+                    self.device_config.address,
+                    attempt,
+                    url,
+                    ex,
+                )
+        _LOG.warning(
+            "[%s] artwork fetch exhausted %d retries for %s (last err: %s)",
+            self.device_config.address,
+            len(ARTWORK_FETCH_RETRY_DELAYS),
+            url,
+            last_err,
+        )
+        return None
 
     # pylint: disable = R0914,R0915
     async def _update_states(self, deferred=0, received_data: dict[str, Any] | None = None) -> None:
@@ -1057,17 +1206,12 @@ class KodiDevice(IKodiDevice):
                 else:
                     artwork_type = self._device_config.artwork_type
 
-                # Workaround for remote bug : when stopping/playing the same media or another media
-                # with the same artwork it won't be displayed
-                current_artwork = self.media_artwork
-                is_starting_media = False
-                # Playback state goes from stop (MediaStates.ON) to play
-                if self._attr_state == self._attr_state == MediaStates.ON and self.get_state() in [
-                    MediaStates.PLAYING,
-                    MediaStates.BUFFERING,
-                    MediaStates.PAUSED,
-                ]:
-                    is_starting_media = True
+                # Patch 36: removed `current_artwork` snapshot and `is_starting_media`
+                # detection. Both supported the now-deleted `_reset_media_artwork()`
+                # workaround (see original lines 1258-1263 of v1.18.13-madalone.3).
+                # The underlying remote bug — same-URL re-emit not refreshing the
+                # display on play→play replay — was fixed in the firmware long ago,
+                # so the integration-side workaround was dead code.
 
                 thumbnail = art.get(artwork_type, None)
                 if thumbnail is None and artwork_type == "fanart":
@@ -1144,10 +1288,46 @@ class KodiDevice(IKodiDevice):
                                 ex,
                             )
 
-                if thumbnail != self._thumbnail:
-                    self._thumbnail = thumbnail
-                    self._media_image_url = self._kodi.thumbnail_url(thumbnail) or ""
-                    self._media_image_data = ""
+                # Patch 38: item-identity guard. Track (id, file) of the playing item so we
+                # can distinguish a genuine media change from Kodi briefly returning art={}
+                # for the same item (PVR EPG cycle, plugin source mid-scrape, library
+                # scraper still resolving). Without this guard, the prior code path
+                # treated thumbnail=None as "art removed" and clobbered _media_image_data.
+                _item_identity = (self._item.get("id"), self._item.get("file") or "")
+                _item_changed = _item_identity != self._last_item_identity
+                self._last_item_identity = _item_identity
+
+                # Patch 38: only treat a thumbnail change as real if either (a) the new
+                # thumbnail is a non-empty value (genuine art update) or (b) the playing
+                # item actually changed (id/file shifted). Transient None on the same
+                # item is ignored — prior _media_image_url / _media_image_data retained.
+                _thumbnail_real_change = thumbnail != self._thumbnail and (
+                    thumbnail is not None or _item_changed
+                )
+
+                # Patch 42: also enter the artwork block when a previous fetch failed
+                # and retry is still pending. Without this, the deferred retry scheduled
+                # on fetch failure (and any subsequent watchdog tick) would be skipped
+                # because `self._thumbnail == thumbnail` after the failed attempt mutated
+                # it — leaving _media_image_data stuck empty until the playing item
+                # actually changes. Only attempt the retry when we have a URL to retry
+                # AND the user is in download_artwork mode.
+                _retry_pending = (
+                    self._artwork_pending_retry
+                    and self._device_config.download_artwork
+                    and bool(self._media_image_url)
+                )
+                _should_run_artwork_block = _thumbnail_real_change or _retry_pending
+
+                if _should_run_artwork_block:
+                    if _thumbnail_real_change:
+                        # State transition only on genuine change; retries reuse the
+                        # already-cached _thumbnail / _media_image_url.
+                        self._thumbnail = thumbnail
+                        self._media_image_url = self._kodi.thumbnail_url(thumbnail) or ""
+                    # Patch 36: do NOT pre-clear self._media_image_data here. The download
+                    # branch below now owns this decision — success overwrites, failure
+                    # retains the prior value, genuine no-art clears it explicitly.
                     # Not working with smb links.
                     # TODO extend this approach for other media types
                     if self._item["type"] == "movie" and thumbnail and "@smb" in thumbnail:
@@ -1169,48 +1349,67 @@ class KodiDevice(IKodiDevice):
                                 self._media_image_url,
                                 ex,
                             )
-                    if self._device_config.download_artwork and self._media_image_url:
-                        try:
-                            async with ClientSession() as session:
-                                async with session.get(self._media_image_url, timeout=ARTWORK_TIMEOUT) as response:
-                                    # Patch 29b: discard non-200 responses. Kodi's webserver returns
-                                    # 404 + HTML "File not found" for unresolvable image:// URIs; that
-                                    # would otherwise be base64-encoded and shipped to the remote as
-                                    # a bogus data:... URI. Do NOT check Content-Type — Kodi omits the
-                                    # header entirely for real images (aiohttp then defaults it to
-                                    # application/octet-stream), so a content-type filter rejects
-                                    # every legitimate thumbnail.
-                                    if response.status != 200:
-                                        _LOG.debug(
-                                            "[%s] artwork fetch non-200 (status=%s url=%s), discarding",
-                                            self.device_config.address,
-                                            response.status,
-                                            self._media_image_url,
-                                        )
-                                        self._media_image_data = ""
-                                    else:
-                                        buffer = b""
-                                        async for data, _ in response.content.iter_chunks():
-                                            buffer += data
-                                        self._media_image_data = (
-                                            "data:"
-                                            + response.content_type
-                                            + ";base64,"
-                                            + base64.b64encode(buffer).decode("utf-8")
-                                        )
-                        # pylint: disable = W0718
-                        except Exception as ex:
-                            _LOG.warning("[%s] Failed to download artwork : %s", self.device_config.address, ex)
-                            self._media_image_data = ""
 
+                    # Patch 36/37: artwork fetch + emit semantics. The retry/MIME logic
+                    # lives in _fetch_artwork_with_retry(); here we just translate its
+                    # outcome into a partial-update emit.
+                    _artwork_fetch_failed = False
+                    if self._device_config.download_artwork:
+                        if self._media_image_url:
+                            _new_data = await self._fetch_artwork_with_retry(self._media_image_url)
+                            if _new_data is None:
+                                _artwork_fetch_failed = True
+                                # Patch 42: arm retry flag so the next poll re-enters
+                                # this block even though _thumbnail is already populated.
+                                self._artwork_pending_retry = True
+                                # Patch 36: omit MEDIA_IMAGE_URL from updated_data on
+                                # fetch failure. ucapi's partial-update protocol retains
+                                # the previous value when a field is absent — emitting ""
+                                # would actively clear the remote's cached image.
+                            else:
+                                self._media_image_data = _new_data
+                                # Patch 42: success clears the retry flag.
+                                self._artwork_pending_retry = False
+                                updated_data[MediaAttr.MEDIA_IMAGE_URL] = self.media_artwork
+                        else:
+                            # Genuine "no art" — explicit clear matches on_stop semantics.
+                            self._media_image_data = ""
+                            self._artwork_pending_retry = False
+                            updated_data[MediaAttr.MEDIA_IMAGE_URL] = ""
+                    else:
+                        # URL mode: firmware does its own 3-retry budget; emit URL straight.
+                        self._artwork_pending_retry = False
+                        updated_data[MediaAttr.MEDIA_IMAGE_URL] = self.media_artwork
+
+                    # Mask the data URI body in logs and only show MIME + length.
+                    _art = self.media_artwork
+                    if isinstance(_art, str) and _art.startswith("data:"):
+                        _semi = _art.find(";")
+                        _art_disp = f"<data URI mime={_art[5:_semi] if _semi > 0 else '?'!r} len={len(_art)}>"
+                    elif isinstance(_art, str) and _art:
+                        _art_disp = f"<URL len={len(_art)}>"
+                    else:
+                        _art_disp = "<EMPTY>"
                     _LOG.debug(
-                        "[%s] Kodi changed thumbnail %s : %s",
+                        "[%s] artwork emit: %s "
+                        "(real_change=%s, item_changed=%s, retry_run=%s, fetch_failed=%s, "
+                        "in_updated_data=%s)",
                         self.device_config.address,
-                        self._thumbnail,
-                        self.media_artwork,
+                        _art_disp,
+                        _thumbnail_real_change,
+                        _item_changed,
+                        _retry_pending,
+                        _artwork_fetch_failed,
+                        MediaAttr.MEDIA_IMAGE_URL in updated_data,
                     )
-                    # self._media_image_url = self._media_image_url.removesuffix('%2F')
-                    updated_data[MediaAttr.MEDIA_IMAGE_URL] = self.media_artwork
+
+                    if _artwork_fetch_failed:
+                        # Patch 37: schedule a deferred retry on fetch failure. With
+                        # patch 42's pending-retry flag, the deferred poll now actually
+                        # retries instead of skipping the artwork block.
+                        asyncio.create_task(self._update_states(deferred=4)).add_done_callback(
+                            _log_task_exception
+                        )
 
                 media_title = _strip_kodi_formatting(
                     self._item.get("title") or self._item.get("label") or self._item.get("file") or ""
@@ -1255,12 +1454,13 @@ class KodiDevice(IKodiDevice):
                     updated_data[MediaAttr.MEDIA_ALBUM] = self._media_album
                     changed_media = True
 
-                if is_starting_media and len(self.media_artwork) > 0 and current_artwork == self.media_artwork:
-                    _LOG.debug(
-                        "[%s] Starting new media but unchanged artwork, sending empty artwork to reset it",
-                        self.device_config.address,
-                    )
-                    await self._reset_media_artwork()
+                # Patch 36: removed `is_starting_media + same-art → re-emit` workaround.
+                # The original code called _reset_media_artwork() which emitted the
+                # *current* media_artwork value (a no-op given ucapi dedup). With
+                # patches 36/38 in place, the underlying issue it papered over —
+                # transient art clearing and stale-cache flicker — is addressed at the
+                # source. Keeping the dead block here purely as a marker for future
+                # spelunkers tracing the fix history.
 
                 # If media changed, update chapters list (Kodi >=22)
                 # Player.GetChapters is a Kodi 22+ method — older Kodi versions raise

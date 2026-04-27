@@ -207,6 +207,14 @@ SETUP_FIELDS = [
         },
     },
     {
+        "field": {"number": {"value": 12, "min": 5, "max": 60, "steps": 1, "unit": {"en": "s", "fr": "s"}}},
+        "id": "artwork_timeout_seconds",
+        "label": {
+            "en": "Artwork download timeout (seconds, only used when downloading artwork)",
+            "fr": "Délai de téléchargement de l'image (secondes, utilisé uniquement avec téléchargement)",
+        },
+    },
+    {
         "field": {"checkbox": {"value": False}},
         "id": "disable_keyboard_map",
         "label": {
