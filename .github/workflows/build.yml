@@ -179,6 +179,12 @@ jobs:
         with:
           token: "${{ secrets.GITHUB_TOKEN }}"
           prerelease: false
+          # Use semver-based "Latest" election instead of GitHub's default published_at
+          # ordering. Without this, parallel CI runs for multiple tag pushes can race —
+          # whichever job finishes last gets the "Latest" badge regardless of tag version.
+          # Observed on 2026-04-27: pushing madalone.4/.5/.6 simultaneously had .4 win the
+          # badge because its qemu-emulated aarch64 build happened to finish last.
+          make_latest: 'legacy'
           files: |
             *.tar.gz
             ${{ env.HASH_FILENAME }}
