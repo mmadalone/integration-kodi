@@ -30,7 +30,13 @@ from typing import (
 
 import jsonrpc_base
 import ucapi
-from aiohttp import ClientError, ClientOSError, ClientSession, ClientTimeout, ServerTimeoutError
+from aiohttp import (
+    ClientError,
+    ClientOSError,
+    ClientSession,
+    ClientTimeout,
+    ServerTimeoutError,
+)
 from jsonrpc_base.jsonrpc import (  # pylint: disable = E0401
     ProtocolError,
     TransportError,
@@ -1301,9 +1307,7 @@ class KodiDevice(IKodiDevice):
                 # thumbnail is a non-empty value (genuine art update) or (b) the playing
                 # item actually changed (id/file shifted). Transient None on the same
                 # item is ignored — prior _media_image_url / _media_image_data retained.
-                _thumbnail_real_change = thumbnail != self._thumbnail and (
-                    thumbnail is not None or _item_changed
-                )
+                _thumbnail_real_change = thumbnail != self._thumbnail and (thumbnail is not None or _item_changed)
 
                 # Patch 42: also enter the artwork block when a previous fetch failed
                 # and retry is still pending. Without this, the deferred retry scheduled
@@ -1313,9 +1317,7 @@ class KodiDevice(IKodiDevice):
                 # actually changes. Only attempt the retry when we have a URL to retry
                 # AND the user is in download_artwork mode.
                 _retry_pending = (
-                    self._artwork_pending_retry
-                    and self._device_config.download_artwork
-                    and bool(self._media_image_url)
+                    self._artwork_pending_retry and self._device_config.download_artwork and bool(self._media_image_url)
                 )
                 _should_run_artwork_block = _thumbnail_real_change or _retry_pending
 
@@ -1407,9 +1409,7 @@ class KodiDevice(IKodiDevice):
                         # Patch 37: schedule a deferred retry on fetch failure. With
                         # patch 42's pending-retry flag, the deferred poll now actually
                         # retries instead of skipping the artwork block.
-                        asyncio.create_task(self._update_states(deferred=4)).add_done_callback(
-                            _log_task_exception
-                        )
+                        asyncio.create_task(self._update_states(deferred=4)).add_done_callback(_log_task_exception)
 
                 media_title = _strip_kodi_formatting(
                     self._item.get("title") or self._item.get("label") or self._item.get("file") or ""

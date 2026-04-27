@@ -134,9 +134,7 @@ class KodiConfigDevice:
                 f"'artwork_timeout_seconds' must be an integer, got {self.artwork_timeout_seconds!r}"
             ) from ex
         if not 5 <= self.artwork_timeout_seconds <= 60:
-            raise ValueError(
-                f"'artwork_timeout_seconds' must be between 5 and 60, got {self.artwork_timeout_seconds}"
-            )
+            raise ValueError(f"'artwork_timeout_seconds' must be between 5 and 60, got {self.artwork_timeout_seconds}")
 
         # Validate identity fields
         for name in ("id", "name", "address"):

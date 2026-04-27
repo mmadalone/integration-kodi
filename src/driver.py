@@ -186,7 +186,9 @@ async def _post_subscribe_refresh(device_id: str, entity_id: str, timeout: float
             mip_disp = "<EMPTY>"
         _LOG.debug(
             "[patch41] re-pushing media_player attributes for %s; media_image_url=%s; total_keys=%d",
-            entity_id, mip_disp, len(attrs),
+            entity_id,
+            mip_disp,
+            len(attrs),
         )
         api.configured_entities.update_attributes(entity_id, attrs)
     else:
@@ -219,9 +221,9 @@ async def on_subscribe_entities(entity_ids: list[str]) -> None:
                 # next state-update emission and re-pushes the snapshot. Closes
                 # the subscribe-during-initial-connect race that produced
                 # blank artwork on first activity-card open after reinstall.
-                asyncio.create_task(
-                    _post_subscribe_refresh(device_id, entity_id)
-                ).add_done_callback(_log_task_exception)
+                asyncio.create_task(_post_subscribe_refresh(device_id, entity_id)).add_done_callback(
+                    _log_task_exception
+                )
             elif isinstance(entity, remote.KodiRemote):
                 api.configured_entities.update_attributes(
                     entity_id, {ucapi.remote.Attributes.STATE: remote.KODI_REMOTE_STATE_MAPPING.get(state)}
