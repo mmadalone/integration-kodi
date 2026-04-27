@@ -11,6 +11,18 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
+### v1.18.13-madalone.6 — 2026-04-27
+
+**Hotfix on top of madalone.5: artwork sticks when Kodi goes idle without OnStop (patch 43).**
+
+Surfaced when checking the UC Remote 3 entity state mid-redeploy and noticing the activity card was showing artwork from a previous Kodi session even though Kodi had been idle for a while. Tracing the no-players else-branch in `_update_states` (`kodi_device.py:1617+`) showed it was clearing `media_title`, `media_album`, `media_artist`, `media_position`, etc. but **not** `media_image_url`. Combined with patch 36's omit-on-no-change semantic — which correctly retains prior artwork on transient failures — the watchdog's no-players ticks were ucapi no-ops for the artwork field, so the remote kept rendering whatever it last received.
+
+The on-stop handler (`kodi_device.py:445-472`) already does this correctly when Kodi sends a clean `OnStop`. But Kodi doesn't always send `OnStop` — it can drop the WebSocket connection mid-playback, crash, or transition to "no active players" silently when a user navigates away inside Kodi without explicit stop. The watchdog's no-players branch is the fallback for those cases, and it needs to clear artwork too.
+
+- **Fixed** sticky-artwork-when-Kodi-idle (patch 43). The no-players else-branch now mirrors the on-stop handler: sets `_thumbnail = None`, `_media_image_url = ""`, `_media_image_data = ""`, `_artwork_pending_retry = False`, and emits `MEDIA_IMAGE_URL = ""` in `updated_data`. Brings artwork-clearing into the same explicit-clear pattern the rest of the no-players branch already follows for title/album/artist/position/etc.
+
+**Breaking changes flagged:** none observable. Adds clear behavior to a path that previously left state stale; doesn't alter on-stop or any other already-correct code path. ucapi de-dupes if the value was already empty (e.g., on subsequent ticks while still idle), so no log spam.
+
 ### v1.18.13-madalone.5 — 2026-04-27
 
 > **Post-mortem note (added 2026-04-27, after firmware v1.4.10 release):** the user-visible "blank artwork on first card open after integration reinstall" symptom that motivated this hotfix turned out to be a firmware-side bug on UC-Remote-UI commit `1266974` (and pre-v1.4.10), fixed in **UC-Remote-UI v1.4.10** by reconnecting an orphan `entityAdded` core-API signal in `entityController.cpp`, replacing a silent early-return on unknown-entity CHANGE with a `load()` fallback, and adding a missing `entityLoaded` listener to `MediaComponent.qml`. Integration emit pipeline was correct end-to-end (verified via wire capture + UC core API). Patch 41 in this release is now strictly redundant on v1.4.10 firmware but is retained as harmless belt-and-braces for users on older firmware. Patch 42 fixes a real integration-side bug (deferred-retry was self-skipping) and remains load-bearing on any firmware. See `KODI-INTEGRATION-PATCHES.md` patches 41/42 for the original problem statements; the post-mortem section there for the actual root cause.

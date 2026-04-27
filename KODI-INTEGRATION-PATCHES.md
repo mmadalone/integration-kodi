@@ -1228,6 +1228,81 @@ if _should_run_artwork_block:
 
 ---
 
+## Patch 43: Clear Artwork in No-Players Branch (post-`v1.18.13-madalone.5` hotfix)
+
+**File:** `src/kodi_device.py`, `_update_states()` no-players else-branch (around line 1617).
+
+**Problem:** Surfaced when checking the UC Remote 3 entity state mid-redeploy and noticing the activity card was showing artwork from a previous Kodi session even though Kodi had been idle. The no-players else-branch in `_update_states` (the path that fires when `kodi.get_players()` returns empty — i.e., Kodi is connected but has no active player) was clearing most state correctly:
+
+```python
+# Pre-patch-43 no-players branch:
+self._media_position = 0
+self._media_duration = 0
+self._media_title = ""
+self._media_album = ""
+self._media_artist = ""
+self._media_id = ""
+updated_data[MediaAttr.MEDIA_POSITION] = 0
+updated_data[MediaAttr.MEDIA_DURATION] = 0
+updated_data[MediaAttr.MEDIA_TITLE] = ""
+updated_data[MediaAttr.MEDIA_ALBUM] = ""
+updated_data[MediaAttr.MEDIA_ARTIST] = ""
+updated_data[MediaAttr.SOURCE] = ""
+# ... (more explicit clears)
+# NOTE: media_image_url is conspicuously absent.
+```
+
+`media_image_url` was conspicuously absent. Combined with patch 36's omit-on-no-change semantic — which correctly retains prior artwork on transient fetch failures — the no-players watchdog ticks were ucapi no-ops for the artwork field. The remote kept rendering whatever it last received from a successful playback emit, indefinitely, even though Kodi had been idle for minutes/hours.
+
+The on-stop handler (`kodi_device.py:445-472`) already does this correctly when Kodi sends a clean `OnStop`:
+
+```python
+self._thumbnail = None
+self._media_image_url = ""
+self._media_image_data = ""
+updated_data[MediaAttr.MEDIA_IMAGE_URL] = ""
+```
+
+But Kodi doesn't always send `OnStop`. Observed (or plausible) cases that bypass it:
+
+- Kodi crashes mid-playback (process killed; no `OnStop` emitted before death)
+- WebSocket connection drops; integration reconnects later, finds Kodi idle, no `OnStop` was queued for relay
+- User navigates away inside Kodi (back to home menu without explicit stop) — depending on Kodi version + skin behavior, `OnStop` may or may not fire
+- Some Kodi addons (especially streaming plugins) close their player without firing `OnStop` if the user backs out
+
+When any of those happens, the watchdog's no-players branch is the fallback. Pre-patch-43 it didn't clear the artwork.
+
+**Fix:** mirror what `on_stop` already does, in the no-players branch:
+
+```python
+# Patch 43:
+self._thumbnail = None
+self._media_image_url = ""
+self._media_image_data = ""
+self._artwork_pending_retry = False
+updated_data[MediaAttr.MEDIA_IMAGE_URL] = ""
+```
+
+Inserted just after `self._media_id = ""` and before the existing `updated_data[MediaAttr.MEDIA_POSITION] = 0` line, so the field-clear and the explicit-emit happen in the same place as the rest of the no-players branch (consistency with the existing code pattern).
+
+**Why also clear `_artwork_pending_retry`:** patch 42's flag drives retry-on-next-poll for failed artwork fetches. Once we're in the no-players state, no playback exists to retry the fetch for, so the flag should be reset to avoid a stale retry firing if Kodi resumes playback with a different item (which would set its own `_thumbnail_real_change` and re-arm the flag fresh).
+
+**Behavioral impact:**
+- Kodi goes idle → next watchdog tick → artwork clears on remote (previously: persisted indefinitely).
+- Kodi resumes playback → fresh `_thumbnail_real_change=True` on next poll → artwork re-fetched and emitted (unchanged from prior behavior).
+- ucapi de-dupes if `MEDIA_IMAGE_URL` was already empty from a prior tick — so no log spam from emitting `""` repeatedly while idle.
+
+**Why this doesn't conflict with other patches:**
+
+- **Patch 36 (omit on transient failure):** patch 36's "omit" applies inside the artwork block (when `_thumbnail_real_change` or `_retry_pending` was true). The no-players branch is a different code path entirely — it's the genuinely-no-playback state where clearing IS the correct behavior, equivalent to on-stop.
+- **Patch 38 (item-identity guard):** sits in the artwork block and prevents transient `art={}` mid-playback from clobbering state. The no-players branch is invoked when there's no active player at all — distinct from "playing item with momentarily-empty art."
+- **Patch 41 (`_post_subscribe_refresh`):** unaffected. Its listener fires on the next `Events.UPDATE` regardless of which branch produced it.
+- **Patch 42 (`_artwork_pending_retry` flag):** explicitly reset here so a stale retry doesn't carry across the playback→idle transition.
+
+**Breaking changes flagged:** none observable. Adds clear behavior to a path that previously left state stale; doesn't alter `on_stop` or any other already-correct code path. The wire shape doesn't change beyond emitting `MEDIA_IMAGE_URL=""` on the watchdog tick that first observes "no players" — same as `MEDIA_TITLE=""` already does.
+
+---
+
 ## Post-mortem: Patch 41 root cause (UC-Remote-UI v1.4.10, 2026-04-27)
 
 The user-visible symptom that motivated patch 41 — "blank artwork on first activity-card open after integration reinstall, fixed by close+reopen" — turned out to be three layered bugs on the firmware side, all on UC-Remote-UI commit `1266974` and earlier (i.e. all pre-v1.4.10). Triangulation chain:

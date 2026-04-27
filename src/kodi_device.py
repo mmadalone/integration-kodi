@@ -1622,6 +1622,21 @@ class KodiDevice(IKodiDevice):
                 self._media_album = ""
                 self._media_artist = ""
                 self._media_id = ""
+                # Patch 43: clear artwork state when Kodi reports no active players.
+                # Mirrors the on_stop handler (kodi_device.py:445-472) which already
+                # clears these on a clean Kodi stop. The no-players branch fires when
+                # Kodi went idle without sending a clean OnStop event (Kodi crashed,
+                # connection dropped, user navigated away inside Kodi without
+                # pressing stop, etc.) — without this clear, _media_image_data /
+                # _media_image_url stay populated from the last playback, and patch
+                # 36's omit-on-no-change semantic means the remote retains the stale
+                # artwork indefinitely. Clearing here brings the no-players branch
+                # in line with on_stop and the rest of the explicit clears below.
+                self._thumbnail = None
+                self._media_image_url = ""
+                self._media_image_data = ""
+                self._artwork_pending_retry = False
+                updated_data[MediaAttr.MEDIA_IMAGE_URL] = ""
                 updated_data[MediaAttr.MEDIA_POSITION] = 0
                 updated_data[MediaAttr.MEDIA_DURATION] = 0
                 updated_data[MediaAttr.MEDIA_TITLE] = ""

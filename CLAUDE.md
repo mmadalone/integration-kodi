@@ -9,7 +9,7 @@ Patched fork of [albaintor/integration-kodi](https://github.com/albaintor/integr
 **Owner:** madalone
 **Device:** UC Remote 3 at `192.168.2.204`, PIN `6984`
 **Upstream:** `albaintor/integration-kodi` tag `v1.18.13`
-**Current tag:** `v1.18.13-madalone.5` (branch `v1.18.13-patched`)
+**Current tag:** `v1.18.13-madalone.6` (branch `v1.18.13-patched`)
 **Language:** Python 3.11 (async/await, `ucapi` 0.6.0, `aiohttp`, Kodi JSON-RPC)
 **Build toolchain:** `docker.io/unfoldedcircle/r2-pyinstaller:3.11.13-0.4.0`
 
@@ -42,6 +42,10 @@ KODI-INTEGRATION-PATCHES.md  # Detailed patch documentation
 ```
 
 ---
+
+## PLANNING
+
+make sure the plan follows c++/python/ucapi/uc3 best practices and consult official c++/python/ucapi/uc3 docs and community forums online for true & tried solutions with reported success. IMPORTANT: NO HACKY SOLUTIONS! do not break logic, only improve upon it and flag code breaking changes in the plan. do thorough research and codebase check (to avoid dupes and propose arch improvements), ask me anything that's unclear before presenting plan.
 
 ## Build & Deploy
 
@@ -102,7 +106,7 @@ Install the upstream release tar.gz from [albaintor/integration-kodi releases](h
 
 ## Current Patches
 
-All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is the source of truth). Summary below (42 patches as of `v1.18.13-madalone.5`):
+All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is the source of truth). Summary below (43 patches as of `v1.18.13-madalone.6`):
 
 | # | Name | Summary |
 |---|------|---------|
@@ -148,6 +152,7 @@ All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is 
 | 40 | Shared `ClientSession` + configurable artwork timeout | Single `aiohttp.ClientSession` per device (lifecycle = connect/disconnect) instead of per-fetch construction. New `artwork_timeout_seconds` setup field (range 5-60, default 12s, was 5s hardcoded). `UPDATE_LOCK_TIMEOUT` 10→30s to accommodate worst-case retry budget. |
 | 41 | Subscribe-time refresh | `on_subscribe_entities` schedules `_post_subscribe_refresh` for media_player entities. Helper waits (via `events.once` + `asyncio.Future` + 30s timeout) for next `Events.UPDATE` from the device, then re-pushes `filter_attributes(device.attributes)`. Originally added to address blank-artwork-after-reinstall — turned out to be a firmware bug fixed in **UC-Remote-UI v1.4.10**; patch 41 is now redundant on v1.4.10+ firmware but retained as a harmless no-op for older firmware. See "Post-mortem" in `KODI-INTEGRATION-PATCHES.md`. |
 | 42 | Deferred-retry actually retries | Adds `_artwork_pending_retry` flag + `_retry_pending` term to the artwork-block guard. Without it, the deferred re-poll scheduled on artwork-fetch failure was self-skipping (because `_thumbnail` had already been mutated by the failed attempt, so `_thumbnail_real_change` was false). The flag is set on fetch failure and cleared on success or genuine no-art state — letting both the explicit deferred retry and the natural watchdog cadence drive recovery. |
+| 43 | Clear artwork in no-players branch | The no-players else-branch in `_update_states` cleared `media_title`, `media_album`, `media_artist`, etc. but left `media_image_url` populated. Combined with patch 36's omit-on-no-change semantic, the remote retained stale artwork when Kodi went idle without firing a clean `OnStop` event (e.g., Kodi crashed, connection dropped, user navigated away inside Kodi). Patch 43 explicitly clears `_thumbnail` / `_media_image_url` / `_media_image_data` / `_artwork_pending_retry` and emits `MEDIA_IMAGE_URL=""` in the same branch, mirroring the on-stop handler. |
 
 **Dropped pre-release (v1.18.13-madalone.2):** `suppress_media_browser`, `suppress_shuffle`, `suppress_repeat` were drafted as integration-side feature-removal toggles. Pulled after diagnosis showed the feature list doesn't re-propagate to already-subscribed UC3 entities. UX for these now lives in UC-Remote-UI `Config.showMediaBrowserButton` / `showShuffleButton` / `showRepeatButton` (v1.4.2+). Dataclass fields retained as silent no-ops for config backward-compat.
 
@@ -211,3 +216,9 @@ Documented in `KODI-INTEGRATION-PATCHES.md` under "Companion Firmware Fixes". Th
 5. **Version the tar.gz.** Output file: `kodi-integration-v<VERSION>.tar.gz` in the project directory. Version in `driver.json` field `version`.
 
 6. **`pip install` before PyInstaller.** See Build section. Omitting this produces a binary that starts but immediately crashes.
+
+---
+
+## AUDITING CODEBASE
+
+When user asks to audit codebase, read full codebase, and throw all industry tests at it. grade it as a pro dev would. IMPORTANT: no glazing, be brutally honest.

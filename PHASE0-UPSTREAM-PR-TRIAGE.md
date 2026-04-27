@@ -159,3 +159,9 @@ Total upstream-applicable patches: **30** (out of 42). Skipped/held: **5 SKIP + 
 Most of the fork's work transfers cleanly. The artwork pipeline (Tiers C+D+E) is the most valuable thing to upstream — those patches address real bugs that would benefit any user. The setup-flow additions need mechanical rebase but no design changes. The simple-command tier is held pending coordination.
 
 Ready to proceed to **Phase 1 (Tier A first PR)** when approved.
+
+## Future upstream issues to file (not in our patches)
+
+Pre-existing upstream behaviors noticed during fork-side debugging that are worth flagging to the maintainer when/if we open a coordination issue. These are NOT in our patch series — listing them here so they're not lost.
+
+- **No-players branch in `_update_states` re-emits empty values every watchdog tick (~10 s) without dirty-checking.** Touched and observed during patch 43 work (2026-04-27). The else-branch unconditionally pushes `MEDIA_TITLE=""`, `MEDIA_ALBUM=""`, `MEDIA_ARTIST=""`, `MEDIA_POSITION=0`, etc. plus 4 select/sensor entities of the same shape — ~5 wire `entity_change` events per tick during idle, all duplicates of the previous tick. ucapi propagates them all. Fix would be tracking per-attribute "previously emitted value" and dirty-checking before adding to `updated_data`. Predates v1.18.13. Bandwidth/log noise only; not user-visible. Belongs upstream rather than as a fork patch since it would refactor pristine upstream code in a way that complicates future rebases.
