@@ -179,7 +179,8 @@ async def _post_subscribe_refresh(device_id: str, entity_id: str, timeout: float
         mip = attrs.get(ucapi.media_player.Attributes.MEDIA_IMAGE_URL.value, "")
         if isinstance(mip, str) and mip.startswith("data:"):
             semi = mip.find(";")
-            mip_disp = f"<data URI mime={mip[5:semi] if semi > 0 else '?'!r} len={len(mip)}>"
+            mime_part = mip[5:semi] if semi > 0 else "?"
+            mip_disp = f"<data URI mime={mime_part!r} len={len(mip)}>"
         elif isinstance(mip, str) and mip:
             mip_disp = f"<URL len={len(mip)}>"
         else:

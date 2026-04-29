@@ -45,7 +45,13 @@ KODI_ARTWORK_TVSHOWS_LABELS = [
 # into `image://...` so the existing fetch pipeline can resolve them.
 KODI_ARTWORK_CHANNELS_LABELS = [
     {"id": "icon", "label": {"en": "Channel logo (default)", "fr": "Logo de la chaîne (défaut)"}},
-    {"id": "thumbnail", "label": {"en": "Top-level thumbnail (PseudoTV addon path / EPG image)", "fr": "Vignette principale (PseudoTV / image EPG)"}},
+    {
+        "id": "thumbnail",
+        "label": {
+            "en": "Top-level thumbnail (PseudoTV addon path / EPG image)",
+            "fr": "Vignette principale (PseudoTV / image EPG)",
+        },
+    },
     {"id": "thumb", "label": {"en": "Currently-airing show poster", "fr": "Affiche du programme en cours"}},
     {"id": "poster", "label": {"en": "Poster", "fr": "Poster"}},
     {"id": "fanart", "label": {"en": "Fan art", "fr": "Fan art"}},

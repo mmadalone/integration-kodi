@@ -1055,7 +1055,8 @@ class KodiDevice(IKodiDevice):
                         )
                         continue
                     mime = self._sniff_mime(buffer)
-                    return f"data:{mime};base64,{base64.b64encode(buffer).decode('utf-8')}"
+                    encoded = base64.b64encode(buffer).decode("utf-8")
+                    return f"data:{mime};base64,{encoded}"
             except (ClientError, asyncio.TimeoutError, OSError) as ex:
                 last_err = ex
                 _LOG.debug(
@@ -1233,7 +1234,8 @@ class KodiDevice(IKodiDevice):
                 if artwork_type == "thumbnail":
                     _raw_thumb = self._item.get("thumbnail", None)
                     if _raw_thumb and not _raw_thumb.startswith("image://"):
-                        thumbnail = f"image://{urllib.parse.quote(_raw_thumb, safe='')}/"
+                        _quoted = urllib.parse.quote(_raw_thumb, safe="")
+                        thumbnail = f"image://{_quoted}/"
                     else:
                         thumbnail = _raw_thumb
                 else:
@@ -1297,7 +1299,8 @@ class KodiDevice(IKodiDevice):
                             _dir_files = (_dir_result or {}).get("files", []) if isinstance(_dir_result, dict) else []
                             _sidecar = media_browser.find_sidecar_for_file(_candidate_file, _dir_files)
                             if _sidecar:
-                                thumbnail = f"image://{urllib.parse.quote(_sidecar, safe='')}/"
+                                _sidecar_quoted = urllib.parse.quote(_sidecar, safe="")
+                                thumbnail = f"image://{_sidecar_quoted}/"
                                 _LOG.debug(
                                     "[%s] patch 30 sidecar resolved at play-time: %s -> %s",
                                     self.device_config.address,
@@ -1405,7 +1408,8 @@ class KodiDevice(IKodiDevice):
                     _art = self.media_artwork
                     if isinstance(_art, str) and _art.startswith("data:"):
                         _semi = _art.find(";")
-                        _art_disp = f"<data URI mime={_art[5:_semi] if _semi > 0 else '?'!r} len={len(_art)}>"
+                        _mime_part = _art[5:_semi] if _semi > 0 else "?"
+                        _art_disp = f"<data URI mime={_mime_part!r} len={len(_art)}>"
                     elif isinstance(_art, str) and _art:
                         _art_disp = f"<URL len={len(_art)}>"
                     else:
