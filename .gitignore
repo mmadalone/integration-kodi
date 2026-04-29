@@ -104,6 +104,7 @@ config.json
 # Build artifacts
 dist/
 build/
+artifacts/
 *.spec
 *.tar.gz
 

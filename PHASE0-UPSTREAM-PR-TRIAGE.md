@@ -67,6 +67,7 @@ Tier C target PR: `upstream-prs/title-artwork-base`. Patch 1 is the refactor ang
 | 28. Broader artwork fallback chain | **APPLY** | `kodi_device.py` only; clean |
 | 29. Placeholder filter + HTTP status validation | **APPLY** | `kodi_device.py`; clean |
 | 30. Sidecar thumbnail detection | **REWORK — extend `get_item_from_file` signature carefully** | Our patch 30 changed `get_item_from_file(file, media_type, thumbnail_url=None)` — adds an explicit override. Upstream changed the same method to add `extract_thumbnail=True` param + apply `strip_kodi_formatting` on labels. Merge both: `get_item_from_file(file, media_type, extract_thumbnail=True, thumbnail_url=None)` where `thumbnail_url` overrides if provided, else `extract_thumbnail` dictates. Module-level `find_sidecar_for_file()` and `_build_sidecar_map()` helpers add cleanly. The use-site at our line 688 in browse_media has to be reapplied against upstream's restructured browse method (now uses `Paging` not `PaginationOptions` + has `_filter_optional_roots`). Mechanical hand-rebase, ~20 LOC of careful merge. |
+| 44. `artwork_type_channels` config field | **APPLY** | New 4-way `media_type` branch in `kodi_device.py:1209-1218` adds the `MediaContentType.CHANNEL` arm — separate config knob (default `"icon"`, set in madalone.8) so PVR / PseudoTV channels get the channel logo (`art.icon`) instead of inheriting the generic `artwork_type` (default `"thumb"` → resolves to embedded show poster on PseudoTV). Adds a `"thumbnail"` sentinel that reads top-level `item['thumbnail']` directly with bare-`special://`-wrap into `image://...` for the addon-path opt-in case. **Critical for the upstream PR:** ship the `.8` default (`"icon"`), not the `.7` default (`"thumbnail"`). The `"thumbnail"` default was wrong for real PVR — `art.icon` is the channel logo on both PseudoTV (`image://special://...pseudotv.../logos/<channel>.png/`) and real PVR (`image://pvrchannel_tv@<encoded>/`), while top-level `thumbnail` is structurally inverted (channel logo on PseudoTV; EPG program-art on real PVR). New `setup_fields.py` dropdown + new `KodiConfigDevice.artwork_type_channels` field. Conflict risk: LOW–MEDIUM (`setup_fields.py` upstream Δ is +6 lines for PVR/Addons categories, no field-id collisions). |
 
 Tier D target PR: `upstream-prs/artwork-resolution`. Patch 30 is the rebase risk in this whole effort.
 
@@ -132,14 +133,14 @@ Tier H is on hold pending maintainer input.
 | 2 | `upstream-prs/reliability-fixes` | B | 17, 18, 19, 20, 21, 24 | NONE | ~1 hour |
 | 3 | `upstream-prs/exception-hardening` | G (subset) | 11, 13, 16 | LOW (supersedes upstream's bare excepts) | ~30 min |
 | 4 | `upstream-prs/title-artwork-base` | C | 2, 3, 4 + Patch 1 refactor | LOW (refactor for 1) | ~1 hour |
-| 5 | `upstream-prs/artwork-resolution` | D | 28, 29, 30 | **MEDIUM-HIGH** (patch 30) | ~2-3 hours |
+| 5 | `upstream-prs/artwork-resolution` | D | 28, 29, 30, 44 | **MEDIUM-HIGH** (patch 30) | ~2-3 hours |
 | 6 | `upstream-prs/artwork-download-hardening` | E | 36, 37, 38, 39, 40, 42 | LOW (kodi_device clean) + MEDIUM (setup_fields rebase) | ~2 hours |
 | 7 | `upstream-prs/setup-options` | F | 5, 26 | LOW | ~30 min |
 | 8 | `upstream-prs/video-only-browse` | F | 25 (reworked) | MEDIUM | ~1-2 hours |
 | 9 | `upstream-prs/dead-code-cleanup` | G | 10 | LOW (after re-review) | ~30 min |
 | H | (held) | H | 31-35 | depends on maintainer's rename plan | TBD |
 
-Total upstream-applicable patches: **30** (out of 42). Skipped/held: **5 SKIP + 5 HOLD = 10**.
+Total upstream-applicable patches: **31** (out of 44). Skipped/held: **5 SKIP + 5 HOLD = 10**.
 
 ## Pre-PR-1 actions
 

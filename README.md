@@ -124,6 +124,16 @@ Underlying mechanism distinction:
 Also in this release:
 - **`build.yml` workflow fixes** — removed the upstream Docker Hub publish job (fork has no counterpart namespace), added `permissions: contents: write` so the GitHub Release job can now auto-publish the tar.gz asset on tag push.
 
+### v1.18.13-madalone.4 → .8 (artwork pipeline + channel-type selection)
+
+Post-`.3` work concentrated on the artwork pipeline. Full per-patch detail in [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md); concise per-release writeups in [`CHANGELOG.md`](CHANGELOG.md).
+
+- **`.4`** (patches 36–40) — partial-update emit semantic (omit `MEDIA_IMAGE_URL` on transient fetch failure instead of blanking it), 3-attempt retry budget on artwork download, item-identity guard against `art={}` flicker on PVR/plugin sources, magic-byte MIME sniff for data URIs (Kodi omits `Content-Type`; Qt rejects `application/octet-stream`), shared `aiohttp.ClientSession` per device + new `artwork_timeout_seconds` config field (range 5–60, default 12).
+- **`.5`** (patches 41–42) — `_post_subscribe_refresh` re-pushes the device snapshot to new media_player subscribers (turned out to be a firmware bug fixed in UC-Remote-UI v1.4.10; harmless on newer firmware); `_artwork_pending_retry` flag fixes the deferred-retry path that was self-skipping after a fetch failure.
+- **`.6`** (patch 43) — clear `MEDIA_IMAGE_URL` in the no-players watchdog branch so the remote stops showing stale artwork when Kodi goes idle without firing a clean `OnStop`.
+- **`.7`** (patch 44) — new `artwork_type_channels` config field with its own `MediaContentType.CHANNEL` branch in artwork-type selection. PVR / PseudoTV channels (`_item['type']='channel'`) were silently inheriting the generic `artwork_type` setting (default `"thumb"`), which on PseudoTV resolved to the embedded currently-airing show's season poster instead of the channel logo. New dropdown in setup with a `"thumbnail"` sentinel that wraps bare `special://...` paths into `image://...` so they resolve through `pykodi.thumbnail_url()` like any other URL.
+- **`.8`** (patch 44b — same-day hotfix to `.7`) — flipped the `artwork_type_channels` default from `"thumbnail"` to `"icon"` after real-PVR testing showed `art["icon"]` is the channel logo on **both** PseudoTV (`image://special://...pseudotv.../logos/<channel>.png/`) and real PVR (`image://pvrchannel_tv@<encoded>/`), while top-level `item['thumbnail']` is structurally inverted between them: channel logo on PseudoTV but EPG program-art (the now-airing show's poster from the broadcaster's CDN) on real PVR. Sentinel handling preserved for the rare opt-in case.
+
 ## Recommended Settings
 
 - **Download artwork:** Enabled — provides instant artwork on first entity open by pre-caching images as base64
@@ -186,13 +196,13 @@ These firmware changes live in the main [UC-Remote-UI](.) project, not in this i
 |------|---------------------|
 | `driver.json` | Version / metadata |
 | `src/const.py` | 5 (power-off dropdown), 31–35 (new simple commands: MODE_CONTEXT_MENU, MODE_PLAY_SELECTED, MODE_KEYPRESS_C, MODE_CODEC_INFO, MODE_PLAYER_DEBUG, MODE_SYSTEM_MENU, MODE_KEYPRESS_ESC), upstream rebase touches |
-| `src/kodi_device.py` | 1–4, 9, 11–13, 16, 17, 20–24, 26–30 (most patch activity) |
+| `src/kodi_device.py` | 1–4, 9, 11–13, 16, 17, 20–24, 26–30, 36–44 (most patch activity) |
 | `src/media_player.py` | 7, 15, 16 |
 | `src/remote.py` | 8 |
 | `src/sensor.py` | 14, 19 |
 | `src/selector.py` | 19 |
-| `src/config.py` | 6, 16, 18, 25–27 (5 new toggle fields + 3 deprecated no-op fields) |
-| `src/setup_fields.py` | 6, 25–27 (new checkboxes + volume overlay deprecation label) |
+| `src/config.py` | 6, 16, 18, 25–27, 40, 44 (`artwork_timeout_seconds`, `artwork_type_channels`) |
+| `src/setup_fields.py` | 6, 25–27, 40, 44 (`KODI_ARTWORK_CHANNELS_LABELS` + dropdown + new field) |
 | `src/setup_flow.py` | 6, 16, 25, 26 (wires 2 new toggles through setup + reconfigure paths) |
 | `src/media_browser.py` | 16, 25, 30 (video-only filter + sidecar thumbnail detection) |
 | `src/driver.py` | 13 |

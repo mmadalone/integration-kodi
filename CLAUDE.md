@@ -9,7 +9,7 @@ Patched fork of [albaintor/integration-kodi](https://github.com/albaintor/integr
 **Owner:** madalone
 **Device:** UC Remote 3 at `192.168.2.204`, PIN `6984`
 **Upstream:** `albaintor/integration-kodi` tag `v1.18.13`
-**Current tag:** `v1.18.13-madalone.6` (branch `v1.18.13-patched`)
+**Current tag:** `v1.18.13-madalone.8` (branch `v1.18.13-patched`)
 **Language:** Python 3.11 (async/await, `ucapi` 0.6.0, `aiohttp`, Kodi JSON-RPC)
 **Build toolchain:** `docker.io/unfoldedcircle/r2-pyinstaller:3.11.13-0.4.0`
 
@@ -106,7 +106,7 @@ Install the upstream release tar.gz from [albaintor/integration-kodi releases](h
 
 ## Current Patches
 
-All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is the source of truth). Summary below (43 patches as of `v1.18.13-madalone.6`):
+All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is the source of truth). Summary below (44 patches as of `v1.18.13-madalone.8`):
 
 | # | Name | Summary |
 |---|------|---------|
@@ -153,6 +153,7 @@ All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is 
 | 41 | Subscribe-time refresh | `on_subscribe_entities` schedules `_post_subscribe_refresh` for media_player entities. Helper waits (via `events.once` + `asyncio.Future` + 30s timeout) for next `Events.UPDATE` from the device, then re-pushes `filter_attributes(device.attributes)`. Originally added to address blank-artwork-after-reinstall — turned out to be a firmware bug fixed in **UC-Remote-UI v1.4.10**; patch 41 is now redundant on v1.4.10+ firmware but retained as a harmless no-op for older firmware. See "Post-mortem" in `KODI-INTEGRATION-PATCHES.md`. |
 | 42 | Deferred-retry actually retries | Adds `_artwork_pending_retry` flag + `_retry_pending` term to the artwork-block guard. Without it, the deferred re-poll scheduled on artwork-fetch failure was self-skipping (because `_thumbnail` had already been mutated by the failed attempt, so `_thumbnail_real_change` was false). The flag is set on fetch failure and cleared on success or genuine no-art state — letting both the explicit deferred retry and the natural watchdog cadence drive recovery. |
 | 43 | Clear artwork in no-players branch | The no-players else-branch in `_update_states` cleared `media_title`, `media_album`, `media_artist`, etc. but left `media_image_url` populated. Combined with patch 36's omit-on-no-change semantic, the remote retained stale artwork when Kodi went idle without firing a clean `OnStop` event (e.g., Kodi crashed, connection dropped, user navigated away inside Kodi). Patch 43 explicitly clears `_thumbnail` / `_media_image_url` / `_media_image_data` / `_artwork_pending_retry` and emits `MEDIA_IMAGE_URL=""` in the same branch, mirroring the on-stop handler. |
+| 44 | Channel-type artwork selection | New `artwork_type_channels` config field (default `"icon"`, dropdown in setup) with its own branch in the `_update_states` artwork-type selection. PVR / PseudoTV channels (`_item['type']='channel'`) were silently inheriting the generic `artwork_type` setting (default `"thumb"`), which on PseudoTV resolved to the embedded currently-airing show's season poster instead of the channel logo. Adds a `"thumbnail"` sentinel handling that wraps bare `special://...` paths into `image://...` so they resolve through `pykodi.thumbnail_url()` like any other URL. **Default flipped from `"thumbnail"` (madalone.7) → `"icon"` (madalone.8, hotfix 44b)** after real-PVR testing showed `art["icon"]` is the channel logo on both PseudoTV (`image://special://...pseudotv.../logos/<channel>.png/`) and real PVR (`image://pvrchannel_tv@<encoded>/`), while top-level `item['thumbnail']` is structurally inverted: channel logo on PseudoTV but EPG program-art on real PVR. See `KODI-INTEGRATION-PATCHES.md` patches 44 + 44b for the full diagnosis. |
 
 **Dropped pre-release (v1.18.13-madalone.2):** `suppress_media_browser`, `suppress_shuffle`, `suppress_repeat` were drafted as integration-side feature-removal toggles. Pulled after diagnosis showed the feature list doesn't re-propagate to already-subscribed UC3 entities. UX for these now lives in UC-Remote-UI `Config.showMediaBrowserButton` / `showShuffleButton` / `showRepeatButton` (v1.4.2+). Dataclass fields retained as silent no-ops for config backward-compat.
 
@@ -216,6 +217,39 @@ Documented in `KODI-INTEGRATION-PATCHES.md` under "Companion Firmware Fixes". Th
 5. **Version the tar.gz.** Output file: `kodi-integration-v<VERSION>.tar.gz` in the project directory. Version in `driver.json` field `version`.
 
 6. **`pip install` before PyInstaller.** See Build section. Omitting this produces a binary that starts but immediately crashes.
+
+---
+
+## Open Items / Pending Work
+
+Snapshot as of 2026-04-29 (post v1.18.13-madalone.8 release).
+
+### Validation pending
+
+- **Patch 44b on diverse PVR sources.** Verified working on PseudoTV (`plugin.video.pseudotv.live`) and Movistar+ Kodi PVR client. Other PVR backends — TVHeadend, MythTV, IPTV Simple Client, Pluto.tv addon, etc. — have not been live-tested. They may report `_item['type']='channel'` with a different art-dict shape; if a user reports "channel logo missing on X PVR backend" the diagnostic chain is documented in `.claude-memory/project_pseudotv_logo_diagnosis.md` (Logdy WS capture → `Player.GetItem` direct probe → compare art-dict shape).
+- **madalone.7 → .8 migration**. Devices that completed setup on `.7` have `artwork_type_channels="thumbnail"` persisted in stored config. The dataclass MISSING-default loop only fills *absent* fields — won't migrate existing values. Users must reconfigure (open setup → save) OR manually delete the line from `/data/<intg-uuid>/config.json` to pick up the `.8` default. Could be auto-migrated in a future patch but flagged as low-priority since it's a 1-day-old default.
+
+### Upstream PR work (Phase 0 triage complete)
+
+`PHASE0-UPSTREAM-PR-TRIAGE.md` is the authoritative source. Summary:
+
+- **Ready to send (mechanical rebase, NONE/LOW conflict):** PRs 1, 2, 3, 4, 7 covering Tiers A (8 patches), B (6), G-subset (3), C (4), F-subset (5+26).
+- **Rebase work (MEDIUM/HIGH conflict):** PRs 5 (Tier D incl. patch 30 sidecar), 6 (Tier E artwork download hardening), 8 (patch 25 video_only_browse_filter rework).
+- **Held pending maintainer input:** Tier H simple commands (5 patches, blocked on upstream's planned `MODE_*` rename).
+- **Skip:** patches 6, 27, 41 — non-load-bearing on modern firmware.
+- **NEW (this session):** Patch 44 added to Tier D queue. Default value MUST be `"icon"` (per `.8`), not `"thumbnail"` (was `.7`'s wrong default).
+
+Pre-PR-1 actions tracked in `PHASE0-UPSTREAM-PR-TRIAGE.md` "Pre-PR-1 actions" section.
+
+### Other quality items
+
+- **`test_driver.py` has zero coverage** for the artwork-type branch in `kodi_device.py:1209-1245`. Adding tests is out of fork scope per existing convention (none of patches 36-44 added tests) but should be in any upstream PR.
+- **x86_64 build matrix is disabled.** `.github/workflows/build.yml` has the `x86_64` branch (`if: matrix.platform == 'x86_64'`) but the matrix config only lists `aarch64`. Re-enable if a use case for x86_64 builds appears (e.g. a contributor running the integration in a non-UC3 environment).
+- **No automated migration script** for stored device configs across major fork bumps. Each new field relies on `__post_init__` MISSING-default. If a future patch needs to *change* an existing field's value (vs add a new one), we'd need an explicit migration step in `KodiConfigDevice.__post_init__` keyed on a version string.
+
+### Future upstream issues to file
+
+`PHASE0-UPSTREAM-PR-TRIAGE.md` "Future upstream issues to file" section tracks pre-existing upstream behaviors flagged during fork debugging that aren't fixed here (e.g., no-players branch dirty-checking).
 
 ---
 

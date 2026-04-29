@@ -1303,6 +1303,183 @@ Inserted just after `self._media_id = ""` and before the existing `updated_data[
 
 ---
 
+## Patch 44: Channel-Type Artwork Selection (`v1.18.13-madalone.7`)
+
+**Files:**
+- `src/config.py` — `KodiConfigDevice` dataclass at line 60.
+- `src/setup_fields.py` — labels list, default const, `SETUP_FIELDS` entry.
+- `src/kodi_device.py` — `_update_states()` artwork-type selection at lines 1209-1227.
+
+**Problem:** Watching PseudoTV channels on Kodi (`plugin.video.pseudotv.live` — addon that synthesizes PVR channels from local library content) showed the **currently-airing show's season poster** on the UC Remote 3 instead of the **PseudoTV channel logo**. Live capture via Logdy WS (`ws://192.168.2.204/log/ws`) on 2026-04-29 with PseudoTV channel "Club Super 3" airing *Capità Harlock (1978) S01E01*:
+
+```
+DEBUG:kodi_device:[madteevee.local] Kodi extracted properties:
+{
+  'art': {
+    'icon':           'image://special%3a%2f%2fprofile%2faddon_data%2fplugin.video.pseudotv.live%2fcache%2flogos%2fClub%20Super%203.png/',
+    'thumb':          'image://%2fmnt%2fDEEPEE%2fTV%2fCapita%cc%80%20Harlock%20(1978)%2fseason01-poster.jpg/',
+    'tvshow.poster':  'image://%2fmnt%2fDEEPEE%2fTV%2fCapita%cc%80%20Harlock%20(1978)%2fposter.jpg/',
+    'tvshow.clearlogo': '...clearlogo.png/',
+    ...
+  },
+  'thumbnail': 'special://profile/addon_data/plugin.video.pseudotv.live/cache/logos/Club Super 3.png',
+  'type': 'channel',
+  'showtitle': 'Capità Harlock', 'season': 1, 'episode': 1
+}
+```
+
+The PseudoTV channel logo (`Club Super 3.png`) is delivered in **two** clean fields:
+1. Top-level `item['thumbnail']` as a bare `special://...` path
+2. `art['icon']` as an `image://`-wrapped `special://...` path
+
+Everything else in `art` (`thumb`, `tvshow.*`, `season.*`) refers to the **embedded currently-airing show**, not the channel.
+
+The pre-patch code at `src/kodi_device.py:1210-1213` was a 3-way branch:
+
+```python
+if self.media_type in [MediaContentType.TV_SHOW, MediaContentType.SEASON, MediaContentType.EPISODE]:
+    artwork_type = self._device_config.artwork_type_tvshows   # default: "tvshow.poster"
+else:
+    artwork_type = self._device_config.artwork_type           # default: "thumb"  ← CHANNEL falls here
+```
+
+`KODI_MEDIA_TYPES` (`src/const.py:175`) maps `"channel" → MediaContentType.CHANNEL`, which falls into the `else` arm — so PVR channels were inheriting the movie/music/everything-else default `"thumb"`. `art["thumb"]` was non-empty (it's where PseudoTV embeds the show poster), so the existing fallback to `item['thumbnail']` at line 1227 never ran. Result: every PVR channel showed the embedded show's poster on the remote.
+
+Latent secondary issue: `pykodi.kodi.thumbnail_url()` at `src/pykodi/kodi.py:78-86` only handles `image://...`-wrapped thumbnails. Bare `special://profile/...` paths return `None` from this method, so even if the existing fallback at line 1227 had reached, the bare `item['thumbnail']` for PseudoTV would silently fail to resolve into an HTTP URL.
+
+**Solution:** Add a third media-type branch and a `"thumbnail"` sentinel that reads the top-level field directly with `image://`-wrap-on-bare-path handling.
+
+`src/config.py:60` — new field:
+
+```python
+artwork_type_channels: str = field(default="thumbnail")
+```
+
+`src/setup_fields.py` — new dropdown labels list, new default const, new `SETUP_FIELDS` entry between the TV-show and browsing dropdowns:
+
+```python
+KODI_ARTWORK_CHANNELS_LABELS = [
+    {"id": "thumbnail", "label": {"en": "Channel logo", ...}},
+    {"id": "icon", "label": {"en": "Icon (art.icon)", ...}},
+    {"id": "thumb", "label": {"en": "Currently-airing show poster", ...}},
+    {"id": "poster", ...}, {"id": "fanart", ...}, {"id": "clearlogo", ...},
+    {"id": "clearart", ...}, {"id": "banner", ...}, {"id": "landscape", ...},
+]
+
+KODI_DEFAULT_CHANNELS_ARTWORK = "thumbnail"  # internal sentinel — selects top-level item['thumbnail']
+```
+
+`src/kodi_device.py:1209-1227` — 3-way → 4-way branch + sentinel handling:
+
+```python
+if self.media_type in [MediaContentType.TV_SHOW, MediaContentType.SEASON, MediaContentType.EPISODE]:
+    artwork_type = self._device_config.artwork_type_tvshows
+elif self.media_type == MediaContentType.CHANNEL:
+    # Patch 44: PVR / PseudoTV channels — separate config knob ...
+    artwork_type = self._device_config.artwork_type_channels
+else:
+    artwork_type = self._device_config.artwork_type
+
+# Patch 44: "thumbnail" sentinel — read top-level item['thumbnail'] directly.
+# PVR channel logos arrive as bare `special://...` paths (no image:// wrapping),
+# which pykodi.thumbnail_url() refuses to resolve. Wrap bare paths into the
+# image:// scheme using the same encoding pattern as get_thumbnail_from_file()
+# (pykodi/kodi.py:88-93) so the downstream fetch pipeline works unchanged.
+if artwork_type == "thumbnail":
+    _raw_thumb = self._item.get("thumbnail", None)
+    if _raw_thumb and not _raw_thumb.startswith("image://"):
+        thumbnail = f"image://{urllib.parse.quote(_raw_thumb, safe='')}/"
+    else:
+        thumbnail = _raw_thumb
+else:
+    thumbnail = art.get(artwork_type, None)
+    if thumbnail is None and artwork_type == "fanart":
+        thumbnail = self._item.get("fanart")
+
+if thumbnail is None or thumbnail == "":
+    thumbnail = self._item.get("thumbnail", None)
+```
+
+The bare-`special://`-wrap step turns `special://profile/.../Club Super 3.png` into `image://special%3A%2F%2Fprofile%2F.../Club%20Super%203.png/`, which `pykodi.thumbnail_url()` then resolves to `http://kodi:hehehe@madteevee.local:8080/image/image%3A%2F%2Fspecial%253A%252F%252F.../...png` — fetchable HTTP URL, identical handling to the rest of the pipeline.
+
+**Why inline-wrap in `kodi_device.py` instead of fixing `pykodi.thumbnail_url()`:** the latter would touch the public pykodi surface and affect movie/music/album/plugin paths globally. Sentinel-handle inline keeps the blast radius small (one branch, one sentinel string, easy to revert).
+
+**Why the new field defaults to `"thumbnail"` (not `"thumb"`):** PseudoTV is the canonical case where users notice the difference, and on PseudoTV (and most PVR-like sources) the top-level `item['thumbnail']` is consistently the channel logo. Users who want the prior behavior (show poster on PVR) can set it to `"thumb"` — that route still works through the original `art.get("thumb")` path. Users on integrations whose channel logo lives at `art["icon"]` (Netflix-plugin-style metadata) can pick `"icon"`.
+
+**Behavioral impact:**
+- PVR / PseudoTV channels → channel logo (via top-level `item['thumbnail']` → wrapped → fetched as HTTP).
+- Movies / TV shows / music / files / everything-non-channel → unchanged (still uses `artwork_type` / `artwork_type_tvshows` as before).
+- Existing fallback chain at lines 1229-1247 (Patch 28 — `("poster", "thumb", "landscape", "banner", "fanart", "clearart", "icon")`) still runs if the configured `artwork_type_channels` resolves to None, so non-PseudoTV `type=channel` items (e.g., real DVB-T tuners with sparse art) still get a usable visual.
+
+**Why this doesn't conflict with other patches:**
+- **Patch 28 (broader fallback chain):** unchanged. It runs after the configured-artwork-type lookup, including after the new sentinel returns None.
+- **Patch 29a (Default*.png placeholder skip):** unchanged. Operates on the resolved `thumbnail` value regardless of which branch produced it.
+- **Patch 30 (sidecar thumbnail recovery):** unchanged. Operates further down, after the `thumbnail` value is finalized.
+- **Patch 36 (omit-on-no-change):** unchanged. The `_thumbnail_real_change` calculation at line 1310 sees the new resolved URL just like any other resolved URL.
+- **Patches 37/38/39/40 (retry/MIME/timeout/session pipeline):** unchanged. Same fetch path runs on the new URL.
+- **Patches 41/42/43 (subscribe-refresh / deferred-retry / no-players-clear):** orthogonal. Operate on different code paths.
+
+**Breaking changes flagged:** none. Existing devices auto-populate the new field with the default on next config-load via `KodiConfigDevice.__post_init__` MISSING-default loop (`src/config.py:86-92`). The wire shape changes only for `_item['type']='channel'` items, where prior behavior of "embedded show poster" is replaceable with the prior-default `"thumb"` choice in the new dropdown. ucapi `entity_change` payload structure is unchanged.
+
+**Verification:**
+- Build: PyInstaller per fork's documented build pipeline (`docker.io/unfoldedcircle/r2-pyinstaller:3.11.13-0.4.0`).
+- Deploy: upload to UC3 via REST `/api/intg/instances/...` (existing fork install path).
+- Confirm via Logdy: `Kodi update` events emitting `MEDIA_IMAGE_URL` resolve to the channel-logo URL (`...Club Super 3.png`), not the show-poster URL (`...season01-poster.jpg`).
+- Confirm via setup wizard reconfigure: new dropdown "Artwork type to display for PVR/Channels" appears between the TV-show dropdown and the browsing dropdowns, with "Channel logo (default)" pre-selected.
+
+---
+
+## Patch 44b: Default-Choice Hotfix (`v1.18.13-madalone.8`)
+
+**Files:** `src/config.py:61`, `src/setup_fields.py` (default const + label order).
+
+**Problem:** Patch 44 defaulted `artwork_type_channels` to `"thumbnail"` — read top-level `item['thumbnail']`. That worked correctly on PseudoTV (the test target during patch 44 design) where top-level `thumbnail` is `special://...pseudotv.../<channel>.png` (channel logo). But real PVR (Kodi's PVR client connected to a Movistar+ tuner — verified via Logdy capture 2026-04-29 04:07Z) has the inverted shape:
+
+```
+'art': {
+  'icon':  'image://pvrchannel_tv@https%3a%2f%2festatico.emisiondof6.com%2f...%2fTVE/',  ← TVE channel logo
+  'thumb': 'image://pvrchannel_tv@https%3a%2f%2festatico.emisiondof6.com%2f...%2fTVE/',
+},
+'thumbnail': 'https://www.movistarplus.es/recorte/n/ficha/M24HF518404',  ← EPG program-art (NOT channel logo)
+'title': 'Telediario Matinal',
+'type': 'channel'
+```
+
+Top-level `thumbnail` for real PVR is the **EPG program image** (poster of the currently-airing show), not the channel logo. Defaulting to `"thumbnail"` showed users program posters instead of TVE/Antena 3/whatever channel branding.
+
+**Solution:** Flip the default from `"thumbnail"` to `"icon"`. `art['icon']` is consistently the channel logo on **both** integrations:
+
+- PseudoTV: `art['icon'] = image://special://...pseudotv.../logos/Club Super 3.png/`
+- Real PVR (Kodi PVR client): `art['icon'] = image://pvrchannel_tv@<encoded url>/`
+
+Both are `image://`-wrapped, both resolve correctly via `pykodi.thumbnail_url()` → Kodi's `/image/` endpoint. Kodi's image dispatcher knows about both `special://` (addon paths) and `pvrchannel_tv@` (PVR client). No new code path.
+
+```python
+# src/config.py:61
+- artwork_type_channels: str = field(default="thumbnail")
++ artwork_type_channels: str = field(default="icon")
+
+# src/setup_fields.py
+- KODI_DEFAULT_CHANNELS_ARTWORK = "thumbnail"
++ KODI_DEFAULT_CHANNELS_ARTWORK = "icon"
+```
+
+`KODI_ARTWORK_CHANNELS_LABELS` reordered so "Channel logo (default)" (id=`icon`) is the first option in the dropdown. The `"thumbnail"` option label clarified to "Top-level thumbnail (PseudoTV addon path / EPG image)" — accurately describing what users get on both integration shapes.
+
+**Sentinel logic at `kodi_device.py:1233-1238` is retained unchanged.** Users who explicitly select the `"thumbnail"` option (e.g., on a quirky integration where the channel logo lives at top-level) still get the bare-`special://`-wrap behavior from patch 44. Only the default changed.
+
+**Migration note:** existing devices that completed setup under madalone.7 already have `"thumbnail"` persisted in their stored config JSON. The dataclass MISSING-default loop at `KodiConfigDevice.__post_init__` only fills fields that are absent — it doesn't migrate existing values. So madalone.7 → madalone.8 upgraders need either to:
+1. Open setup, reconfigure (just confirm the new "Channel logo" default), and save; OR
+2. Manually delete the `artwork_type_channels` line from `/data/config.json` and reload the integration.
+
+Fresh installs and users who skipped madalone.7 get `"icon"` automatically.
+
+**Why not auto-migrate the value:** writing migration logic for a 1-day-old default change adds runtime complexity for a single user-segment that needs a one-line config touch. The existing dataclass MISSING-default pattern is the documented migration mechanism; explicit re-setup is the documented workaround when defaults change.
+
+**Breaking changes flagged:** none in code paths. The user-visible default change is the bug fix itself. The `"thumbnail"` option remains available — just not pre-selected.
+
+---
+
 ## Post-mortem: Patch 41 root cause (UC-Remote-UI v1.4.10, 2026-04-27)
 
 The user-visible symptom that motivated patch 41 — "blank artwork on first activity-card open after integration reinstall, fixed by close+reopen" — turned out to be three layered bugs on the firmware side, all on UC-Remote-UI commit `1266974` and earlier (i.e. all pre-v1.4.10). Triangulation chain:

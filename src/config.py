@@ -58,6 +58,7 @@ class KodiConfigDevice:
     password: str = field(default="password")
     artwork_type: str = field(default="thumb")
     artwork_type_tvshows: str = field(default="tvshow.poster")
+    artwork_type_channels: str = field(default="icon")
     media_update_task: bool = field(default=False)
     download_artwork: bool = field(default=False)
     artwork_timeout_seconds: int = field(default=12)

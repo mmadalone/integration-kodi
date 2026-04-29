@@ -1209,6 +1209,11 @@ class KodiDevice(IKodiDevice):
                 art = self._item.get("art", {})
                 if self.media_type in [MediaContentType.TV_SHOW, MediaContentType.SEASON, MediaContentType.EPISODE]:
                     artwork_type = self._device_config.artwork_type_tvshows
+                elif self.media_type == MediaContentType.CHANNEL:
+                    # Patch 44: PVR / PseudoTV channels — separate config knob so users
+                    # can prefer the channel logo (top-level item['thumbnail']) over the
+                    # embedded currently-airing show poster that lands in art['thumb'].
+                    artwork_type = self._device_config.artwork_type_channels
                 else:
                     artwork_type = self._device_config.artwork_type
 
@@ -1219,9 +1224,22 @@ class KodiDevice(IKodiDevice):
                 # display on play→play replay — was fixed in the firmware long ago,
                 # so the integration-side workaround was dead code.
 
-                thumbnail = art.get(artwork_type, None)
-                if thumbnail is None and artwork_type == "fanart":
-                    thumbnail = self._item.get("fanart")
+                # Patch 44: "thumbnail" sentinel — read top-level item['thumbnail']
+                # directly. PVR channel logos arrive as bare `special://...` paths
+                # (no image:// wrapping), which pykodi.thumbnail_url() refuses to
+                # resolve. Wrap bare paths into the image:// scheme using the same
+                # encoding pattern as get_thumbnail_from_file() (pykodi/kodi.py:88-93)
+                # so the downstream fetch pipeline works unchanged.
+                if artwork_type == "thumbnail":
+                    _raw_thumb = self._item.get("thumbnail", None)
+                    if _raw_thumb and not _raw_thumb.startswith("image://"):
+                        thumbnail = f"image://{urllib.parse.quote(_raw_thumb, safe='')}/"
+                    else:
+                        thumbnail = _raw_thumb
+                else:
+                    thumbnail = art.get(artwork_type, None)
+                    if thumbnail is None and artwork_type == "fanart":
+                        thumbnail = self._item.get("fanart")
 
                 if thumbnail is None or thumbnail == "":
                     thumbnail = self._item.get("thumbnail", None)

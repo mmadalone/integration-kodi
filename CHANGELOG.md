@@ -11,6 +11,58 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
+### v1.18.13-madalone.8 — 2026-04-29
+
+**Hotfix on top of madalone.7: real PVR channels showed EPG program-art instead of channel logo (patch 44b).**
+
+User report: after deploying madalone.7, PseudoTV channels showed the channel logo correctly (the patch 44 fix worked) but **real PVR channels** (Kodi's native PVR client connected to a Movistar+ tuner) started showing the EPG program-art (the currently-airing show's poster from the Movistar website) instead of the TVE channel logo.
+
+Wire-level evidence (Logdy capture from earlier session, 2026-04-29 04:07Z):
+
+```
+'art': {
+  'icon':  'image://pvrchannel_tv@https%3a%2f%2festatico.emisiondof6.com%2frecorte%2fm-DP%2fwpmos%2fTVE/',  ← TVE channel logo
+  'thumb': 'image://pvrchannel_tv@https%3a%2f%2festatico.emisiondof6.com%2frecorte%2fm-DP%2fwpmos%2fTVE/',  ← also channel logo
+},
+'thumbnail': 'https://www.movistarplus.es/recorte/n/ficha/M24HF518404',  ← EPG program image
+'title': 'Telediario Matinal',
+'type': 'channel'
+```
+
+The structural inversion: PseudoTV (addon-based pseudo-PVR) puts the channel logo at top-level `item['thumbnail']`, while real PVR (Kodi's PVR client connected to a tuner / IPTV / streaming source) puts the channel logo at `art['icon']` (with Kodi's `image://pvrchannel_tv@...` wrapper) and uses the top-level `thumbnail` for the EPG program image.
+
+`art['icon']` is consistently the channel logo on **both** integrations:
+- PseudoTV: `image://special://...pseudotv.../logos/<channel>.png/`
+- Real PVR: `image://pvrchannel_tv@<scheme>%3A%2F%2F<host>%2F<path>/`
+
+Both resolve correctly through `pykodi.thumbnail_url()` → Kodi's `/image/` endpoint, which dispatches to its own resolver (addon path for PseudoTV, PVR client for real PVR). No new code needed — just flip the default.
+
+- **Changed** `artwork_type_channels` default from `"thumbnail"` to `"icon"` in `src/config.py:61`.
+- **Changed** `KODI_DEFAULT_CHANNELS_ARTWORK` from `"thumbnail"` to `"icon"` in `src/setup_fields.py`.
+- **Reordered** `KODI_ARTWORK_CHANNELS_LABELS` so "Channel logo (default)" (id=`icon`) is first; relabeled the `thumbnail` option to "Top-level thumbnail (PseudoTV addon path / EPG image)" to flag that it's the right choice only for PseudoTV-style integrations.
+- The `"thumbnail"` sentinel handling in `kodi_device.py` is **retained unchanged** — users who explicitly select that option (e.g., on integrations whose channel logo lives at top-level `item['thumbnail']`) still get the bare-`special://`-wrap behavior from patch 44.
+
+**Migration note:** existing devices that already have `artwork_type_channels="thumbnail"` from madalone.7 will retain that setting (the dataclass default only applies to MISSING fields). Users who deployed madalone.7 and want the new default behavior must either reconfigure the integration or manually delete the `artwork_type_channels` line from the device's stored config JSON. Fresh installs and devices that skipped madalone.7 get the correct `"icon"` default automatically.
+
+**Breaking changes flagged:** none in code paths. The user-visible behavior change for fresh-install or never-touched-the-setting users is the corrected default; the dropdown options are preserved (just reordered).
+
+### v1.18.13-madalone.7 — 2026-04-29
+
+**[Fixed] Channel-type artwork selection (patch 44).**
+
+PVR / PseudoTV channels (`_item['type']='channel'`) were silently inheriting the `artwork_type` setting (default `"thumb"`), which on PseudoTV resolves to the currently-airing show's season poster rather than the channel logo. Surfaced live on `madteevee.local` Kodi: with PseudoTV channel "Club Super 3" airing the show *Capità Harlock*, `art["thumb"]` pointed at `Capità Harlock (1978)/season01-poster.jpg` (the embedded show poster) while the actual channel-logo PNG (`Club Super 3.png`) lived at top-level `item['thumbnail']` and at `art['icon']` — both ignored by the existing 3-way branch in `_update_states()` because `MediaContentType.CHANNEL` fell into the generic `else` arm.
+
+Wire-level evidence captured via Logdy (`UC-Remote-UI/logs/uc3_pseudo_zap.txt`, 2026-04-29 08:13Z): integration's `Kodi extracted properties` consistently delivers a clean `special://profile/.../Club Super 3.png` at top-level `thumbnail`, but the artwork-selection block was preferring `art["thumb"]` because the device-config `artwork_type` defaulted to `"thumb"` and the existing fallback to `item['thumbnail']` (line 1227) only ran when `art["thumb"]` was empty.
+
+Added a new `artwork_type_channels` config field (default `"thumbnail"`) with its own dropdown in setup, separate from the existing `artwork_type` (movies/music/everything-else) and `artwork_type_tvshows` (TV shows). The `"thumbnail"` sentinel value reads the top-level `item['thumbnail']` field directly, wrapping bare `special://...` paths into the `image://...` scheme so the existing fetch pipeline (`pykodi.thumbnail_url`, retry budget, MIME sniff) works unchanged. Users who want the existing show-poster behavior on PVR can set the new field to `"thumb"`; users on integrations whose channel logo is at `art["icon"]` (Netflix-plugin-style) can pick `"icon"`.
+
+- **Added** `artwork_type_channels: str = field(default="thumbnail")` in `src/config.py`. Existing devices auto-populate via the `__post_init__` MISSING-default loop.
+- **Added** `KODI_ARTWORK_CHANNELS_LABELS` dropdown (9 options) + `KODI_DEFAULT_CHANNELS_ARTWORK` constant + `SETUP_FIELDS` entry "Artwork type to display for PVR/Channels" between the existing TV-show and browsing dropdowns in `src/setup_fields.py`.
+- **Added** `MediaContentType.CHANNEL` branch in `src/kodi_device.py:1209-1227` artwork-type selection (3-way → 4-way).
+- **Added** `"thumbnail"` sentinel handling that wraps bare `special://...` paths into the `image://...` scheme using the same encoding pattern as `pykodi.kodi.get_thumbnail_from_file` (`pykodi/kodi.py:88-93`). Inline in `kodi_device.py` rather than in pykodi to keep blast radius small.
+
+**Breaking changes flagged:** none. Existing devices auto-populate the new field with the default on next config-load via `__post_init__` MISSING-default loop. The new selection only fires when `_item['type']='channel'` (PVR/PseudoTV) — movies, TV shows, music, plugins, files, all unchanged. Pre-existing `art["thumb"]`-as-channel-art behavior is opt-in via the new dropdown for users who want it back.
+
 ### v1.18.13-madalone.6 — 2026-04-27
 
 **Hotfix on top of madalone.5: artwork sticks when Kodi goes idle without OnStop (patch 43).**

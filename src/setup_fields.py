@@ -37,8 +37,27 @@ KODI_ARTWORK_TVSHOWS_LABELS = [
     {"id": "icon", "label": {"en": "Icon", "fr": "Icône"}},
 ]
 
+# Patch 44: PVR / channel artwork preference. Default "icon" reads `art["icon"]`,
+# which holds the channel logo consistently across real PVR (`image://pvrchannel_tv@...`
+# from Kodi's PVR client) and PseudoTV (`image://special://...pseudotv.../logos/<channel>.png/`).
+# The "thumbnail" sentinel is offered as an opt-in for users whose integration puts the
+# channel logo at top-level `item['thumbnail']` instead — wraps bare `special://...` paths
+# into `image://...` so the existing fetch pipeline can resolve them.
+KODI_ARTWORK_CHANNELS_LABELS = [
+    {"id": "icon", "label": {"en": "Channel logo (default)", "fr": "Logo de la chaîne (défaut)"}},
+    {"id": "thumbnail", "label": {"en": "Top-level thumbnail (PseudoTV addon path / EPG image)", "fr": "Vignette principale (PseudoTV / image EPG)"}},
+    {"id": "thumb", "label": {"en": "Currently-airing show poster", "fr": "Affiche du programme en cours"}},
+    {"id": "poster", "label": {"en": "Poster", "fr": "Poster"}},
+    {"id": "fanart", "label": {"en": "Fan art", "fr": "Fan art"}},
+    {"id": "clearlogo", "label": {"en": "Clear logo", "fr": "Clear logo"}},
+    {"id": "clearart", "label": {"en": "Clear art", "fr": "Clear art"}},
+    {"id": "banner", "label": {"en": "Banner", "fr": "Affiche"}},
+    {"id": "landscape", "label": {"en": "Landscape", "fr": "Paysage"}},
+]
+
 KODI_DEFAULT_ARTWORK = "thumb"
 KODI_DEFAULT_TVSHOW_ARTWORK = "tvshow.poster"
+KODI_DEFAULT_CHANNELS_ARTWORK = "icon"
 
 KODI_BROWSING_SORT = {
     KodiObjectType.MOVIE: [
@@ -123,6 +142,14 @@ SETUP_FIELDS = [
         "label": {
             "en": "Artwork type to display for TV Shows",
             "fr": "Type d'image média à afficher pour les séries",
+        },
+    },
+    {
+        "field": {"dropdown": {"value": KODI_DEFAULT_CHANNELS_ARTWORK, "items": KODI_ARTWORK_CHANNELS_LABELS}},
+        "id": "artwork_type_channels",
+        "label": {
+            "en": "Artwork type to display for PVR/Channels",
+            "fr": "Type d'image média à afficher pour les chaînes PVR",
         },
     },
     {
