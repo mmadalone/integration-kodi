@@ -1,6 +1,8 @@
 # Phase 0 — Upstream PR triage
 
-Pre-flight inventory of fork patches against `upstream/main` (currently at `08b2a2c`, 6 commits past `v1.18.13`). Output: a per-patch decision on whether to drop / rebase mechanically / rework / hold.
+> **Status (2026-05-02):** Pre-merge analysis. The fork has since been **merged with upstream `v1.20.0`** (commit `d3ec217`); see `KODI-INTEGRATION-PATCHES.md` "Upstream Merge to v1.20.0" section. The conflict assessments and rebase-difficulty notes below were written against `08b2a2c` and are now historical. The per-patch *upstream-PR* recommendations (which patches to send albaintor as PRs, in what order) remain valid — they were the planning work that needs revisiting before any actual upstream PRs are opened.
+
+Pre-flight inventory of fork patches against `upstream/main` (at the time of writing: `08b2a2c`, 6 commits past `v1.18.13`). Output: a per-patch decision on whether to drop / rebase mechanically / rework / hold.
 
 ## Upstream divergence summary
 

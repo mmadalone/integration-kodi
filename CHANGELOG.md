@@ -11,6 +11,24 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
+### v1.20.0-madalone.1 — 2026-05-02
+
+**Merged upstream `v1.20.0` into the fork.** Brings in `albaintor`'s recent work:
+
+- **PVR / Addons browsing** (upstream PR #20 by Serph91P) — new browse roots `kodi://pvr`, `kodi://pvr/tv`, `kodi://pvr/radio`, `kodi://addons`, `kodi://addons/video`, `kodi://addons/audio`. New `KodiObjectType` enums for channels, channel groups, addons, broadcasts. EPG `Now/Next` info as channel subtitles.
+- **Favourites** (upstream PR #21 by Serph91P) — new `src/favorites.py` module + `kodi://favorites` browse root. Pin/unpin favourite items. Optional `favorites_in_root` setup-flow checkbox.
+- **Misc upstream fixes** — `media_browser.py` BBCode strip helper for browse labels, 255-char `media_id` guard, two crash fixes in browse listings, `play_media` return value fix in `kodi_device.py`, connection-check `None`-safety, `reset_feature_cache` on new connection.
+
+All 44 fork patches preserved through the merge. `media_browser.py` had 9 conflict regions (the only file with real conflicts); patches 16, 25, 30 reworked against upstream's restructured browse code (`get_item_from_file` signature merged to accept both `extract_thumbnail: bool` and our `thumbnail_url: str | None` kwargs). All other files Git auto-merged cleanly.
+
+Smoke-tested on UC Remote 3 against Kodi 21.x: PVR Live TV browse, Addons browse + launch, Favourites, sidecar thumbnails, channel-art `"icon"` default — all confirmed working on first deploy.
+
+**Branch renamed:** `v1.18.13-patched` → `v1.20.0-patched`.
+
+Full merge details in [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md) under "Upstream Merge to v1.20.0".
+
+---
+
 ### v1.18.13-madalone.8 — 2026-04-29
 
 **Hotfix on top of madalone.7: real PVR channels showed EPG program-art instead of channel logo (patch 44b).**

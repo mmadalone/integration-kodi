@@ -4,12 +4,12 @@ DON'T BE SYCOPHANTIC
 
 ## Project Identity
 
-Patched fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (v1.18.13) for the **Unfolded Circle Remote 3**. Python 3.11 async integration driver using the `ucapi` library.
+Patched fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (v1.20.0) for the **Unfolded Circle Remote 3**. Python 3.11 async integration driver using the `ucapi` library.
 
 **Owner:** madalone
 **Device:** UC Remote 3 at `192.168.2.204`, PIN `6984`
-**Upstream:** `albaintor/integration-kodi` tag `v1.18.13`
-**Current tag:** `v1.18.13-madalone.8` (branch `v1.18.13-patched`)
+**Upstream:** `albaintor/integration-kodi` tag `v1.20.0` (commit `d3ec217`, merged 2026-05-02)
+**Current tag:** `v1.20.0-madalone.1` (branch `v1.20.0-patched`)
 **Language:** Python 3.11 (async/await, `ucapi` 0.6.0, `aiohttp`, Kodi JSON-RPC)
 **Build toolchain:** `docker.io/unfoldedcircle/r2-pyinstaller:3.11.13-0.4.0`
 
@@ -106,7 +106,7 @@ Install the upstream release tar.gz from [albaintor/integration-kodi releases](h
 
 ## Current Patches
 
-All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is the source of truth). Summary below (44 patches as of `v1.18.13-madalone.8`):
+All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is the source of truth). Summary below (44 patches as of `v1.20.0-madalone.1`; v1.20.0 merge documented in the "Upstream Merge to v1.20.0" section of the same doc):
 
 | # | Name | Summary |
 |---|------|---------|

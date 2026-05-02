@@ -50,7 +50,7 @@ Contributions welcome. A few notes specific to a fork of this shape:
 ### Contribution Flow
 
 1. Fork this repo.
-2. Branch off the current `v1.18.13-patched` tip (or whatever branch matches the current base version — check the branch name is `vX.Y.Z-patched` where `X.Y.Z` is the upstream tag we last rebased to).
+2. Branch off the current `v1.20.0-patched` tip (or whatever branch matches the current base version — check the branch name is `vX.Y.Z-patched` where `X.Y.Z` is the upstream tag we last rebased / merged to).
 3. Make your changes (preferably on a feature branch).
 4. Add a patch section to `KODI-INTEGRATION-PATCHES.md` if your change is fork-specific. Bump the patch number sequentially.
 5. Run the lint sweep locally — the docker builder image `docker.io/unfoldedcircle/r2-pyinstaller:3.11.13-0.4.0` is the reference environment; see [`CLAUDE.md`](CLAUDE.md)'s "Build & Deploy" section for the invocation.
