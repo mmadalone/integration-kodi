@@ -276,9 +276,9 @@ SETUP_FIELDS = [
         "field": {"checkbox": {"value": False}},
         "id": "suppress_volume_overlay",
         "label": {
-            "en": "(Deprecated — use UC Remote 3 Settings > UI > Show volume indicator instead) "
+            "en": "(Deprecated — no longer has any effect; setting retained for config backward compatibility) "
             "Suppress volume overlay on remote",
-            "fr": "(Obsolète — utilisez UC Remote 3 Paramètres > UI > Afficher l'indicateur de volume) "
+            "fr": "(Obsolète — sans effet ; paramètre conservé pour compatibilité ascendante) "
             "Masquer l'indicateur de volume sur la telecommande",
         },
     },

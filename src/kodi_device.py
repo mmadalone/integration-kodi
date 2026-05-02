@@ -385,9 +385,9 @@ class KodiDevice(IKodiDevice):
         self._chapters: list[dict[str, Any]] | None = None
         if device_config.suppress_volume_overlay:
             _LOG.warning(
-                "[%s] suppress_volume_overlay is deprecated: volume features are now advertised. "
-                "To hide the on-screen volume indicator, use UC Remote 3 Settings > UI > "
-                "Show volume indicator (requires remote-ui v1.4.2+).",
+                "[%s] suppress_volume_overlay is deprecated and no longer has any effect; "
+                "volume features are now advertised regardless. The setting is retained "
+                "only for config backward compatibility.",
                 device_config.address,
             )
         self._current_chapter: str | None = None
