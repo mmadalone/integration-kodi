@@ -68,6 +68,10 @@ class IKodiDevice:
         """Return current position in playlist and current playlist."""
         raise NotImplementedError()
 
+    async def get_favourites(self) -> dict[str, Any]:
+        """Return favourites."""
+        raise NotImplementedError()
+
 
 class ButtonKeymap(TypedDict):
     """Kodi keymap."""
@@ -136,6 +140,10 @@ class KodiObjectType(int, Enum):
     ARTIST = 8
     SONG = 9
     PLAYLIST = 10
+    CHANNEL_GROUP = 11
+    CHANNEL = 12
+    ADDON = 13
+    BROADCAST = 14
 
 
 KODI_POWEROFF_COMMANDS: dict[str, dict[str, str]] = {

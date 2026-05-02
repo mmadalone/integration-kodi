@@ -8,6 +8,7 @@ Implementation of a Kodi interface.
 import asyncio
 import logging
 import urllib.parse
+from typing import Any, Literal
 from urllib.parse import quote
 
 import aiohttp
@@ -432,11 +433,42 @@ class Kodi:
             **_build_query(tvshowid=tv_show_id, properties=properties)
         )
 
-    async def get_channels(self, channel_group_id, properties=None):
+    async def get_channels(self, channel_group_id, properties=None, limits=None):
         """Get channels list."""
         return await self._server.PVR.GetChannels(
-            **_build_query(channelgroupid=channel_group_id, properties=properties)
+            **_build_query(channelgroupid=channel_group_id, properties=properties, limits=limits)
         )
+
+    async def get_channel_groups(self, channeltype="tv", properties=None, limits=None):
+        """Get PVR channel groups list (channeltype: 'tv' or 'radio')."""
+        return await self._server.PVR.GetChannelGroups(
+            **_build_query(channeltype=channeltype, properties=properties, limits=limits)
+        )
+
+    async def get_broadcasts(self, channel_id, properties=None, limits=None):
+        """Get EPG broadcasts list for a given channel id."""
+        return await self._server.PVR.GetBroadcasts(
+            **_build_query(channelid=channel_id, properties=properties, limits=limits)
+        )
+
+    async def get_addons(self, addon_type=None, content=None, enabled=True, properties=None, limits=None):
+        """Get installed addons."""
+        return await self._server.Addons.GetAddons(
+            **_build_query(
+                type=addon_type,
+                content=content,
+                enabled=enabled,
+                properties=properties,
+                limits=limits,
+            )
+        )
+
+    async def execute_addon(self, addon_id, params=None, wait=False):
+        """Execute (launch) the given Kodi addon."""
+        kwargs = {"addonid": addon_id, "wait": wait}
+        if params:
+            kwargs["params"] = params
+        return await self._server.Addons.ExecuteAddon(**kwargs)
 
     async def get_players(self):
         """Return the active player objects."""
@@ -467,6 +499,39 @@ class Kodi:
             await self._server.Player.SetSubtitle(
                 **{"playerid": players[0]["playerid"], "subtitle": stream_index, "enable": enable}
             )
+
+    async def get_favourites(self) -> dict[str, Any]:
+        """Get user favourites.
+
+        Returns the raw JSON-RPC result with ``favourites`` array and
+        ``limits`` object.  Use ``favorites.get_kodi_favourites`` for a
+        validated, extracted list.
+        """
+        # TODO this method returns pagination results but doesn't take pagination parameters. To be checked
+        return await self._server.Favourites.GetFavourites(
+            **_build_query(properties=["window", "windowparameter", "thumbnail", "path"])
+        )
+
+    async def add_favourites(
+        self,
+        title: str,
+        fav_type: Literal["media", "window", "script", "androidapp", "unknown"],
+        path: str | None = None,
+        window: str | None = None,
+        windowparameter: str | None = None,
+        thumbnail: str | None = None,
+    ) -> str:
+        """Add a user favourites."""
+        return await self._server.Favourites.AddFavourites(
+            **_build_query(
+                title=title,
+                type=fav_type,
+                path=path,
+                window=window,
+                windowparameter=windowparameter,
+                thumbnail=thumbnail,
+            )
+        )
 
 
 def _build_query(**kwargs):
