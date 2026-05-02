@@ -1536,3 +1536,39 @@ if (url == prevUrl) {
 // After:
 if (url == prevUrl && image2.source != "") {
 ```
+
+---
+
+## Upstream Merge to v1.20.0 (2026-05-02)
+
+Merged upstream `main` (tag `v1.20.0`, commit `d3ec217`) into `v1.18.13-patched` via `git merge --no-ff`. 50 upstream commits picked up; all 44 fork patches preserved through the merge.
+
+**Strategy: merge, not rebase.** With 44 fork patches, rebasing would force per-commit conflict resolution against upstream's restructured `media_browser.py` for any patch touching that file. Merge consolidates the conflict resolution into one human-reviewed pass at the join point. Trade-off: history shows the Y-shape join instead of staying linear; rollback is a `git reset` to the backup branch (`backup/pre-v1.20.0-merge`).
+
+**Upstream changes pulled in (the headline features):**
+- **PR #20 (Serph91P)** — PVR / Addons browsing. New browse roots `kodi://pvr`, `kodi://pvr/tv`, `kodi://pvr/radio`, `kodi://addons`, `kodi://addons/video`, `kodi://addons/audio`. New `KodiObjectType` enums (`CHANNEL_GROUP`, `CHANNEL`, `ADDON`, `BROADCAST`). EPG `Now/Next` info as channel subtitles.
+- **PR #21 (Serph91P)** — Favourites support. New `src/favorites.py` (104 LOC), new `kodi://favorites` browse root, `favorites_in_root` setup-flow checkbox, pinned-shortcuts handling in browse menu.
+- Misc fixes: `media_browser.py` BBCode strip helper, 255-char `media_id` guard, two crash fixes in browse listings, `play_media` return value fix in `kodi_device.py`, connection-check `None`-safety, `reset_feature_cache` on new connection.
+
+**Auto-merged cleanly (Git resolved both sides):** `CHANGELOG.md`, `src/config.py`, `src/const.py`, `src/kodi_device.py`, `src/media_player.py`, `src/pykodi/kodi.py`, `src/setup_fields.py`, `src/setup_flow.py`, `src/translations.py`, `test_connection.py`, `test_driver.py`. Upstream's edits all landed in regions our patches don't touch.
+
+**Manually resolved (4 files):**
+- `README.md` — kept ours verbatim (we'd already rewritten it for the fork; upstream's expansion can be selectively pulled in later if needed)
+- `driver.json` — kept ours; bumped version to `1.20.0-madalone.1`, release_date to `2026-05-02`
+- `.github/workflows/build.yml` — hybrid: kept our `PYTHON_VER: 3.11.13-0.4.0` + `permissions: contents: write` block; dropped upstream's `REGISTRY` / `IMAGE_NAME` env vars (no Docker job in the fork)
+- `src/media_browser.py` — the hard one. 9 conflict regions, all merged in place (not via `--theirs` rebuild). See "Patches reworked against upstream's restructured browse code" below.
+
+**Patches reworked against upstream's restructured browse code:**
+- **Patch 16** (narrowed `except` clauses at 3 per-item iteration sites in `media_browser.py`) — kept ours verbatim, no upstream collision
+- **Patch 25** (`video_only_browse_filter`) — kept ours' filter logic; the call sites at the FILE-output and source-subdirectory loops both adapted to upstream's new `BrowseMediaItem | None` return type from `get_item_from_file` (added `if sub is not None` guards)
+- **Patch 30** (sidecar thumbnail detection) — `get_item_from_file` signature merged: now accepts BOTH upstream's `extract_thumbnail: bool` AND our `thumbnail_url: str | None` kwargs. New body logic: explicit `thumbnail_url` (sidecar) wins; otherwise fall back to upstream's internal extraction when `extract_thumbnail=True` (used for picture-source browsing). Module-level `_build_sidecar_map()` and `_find_sidecar_for_file()` helpers survived the merge intact.
+
+**Lint:** black applied 1 trivial reformat (line that fit in 120 chars after Patch 25/30 merge); pylint 10/10, flake8 0 errors, isort clean.
+
+**Smoke-tested on UC Remote 3 against Kodi 21.x (madteevee):** PVR Live TV browse, Addons browse + launch, Favourites browse, sidecar thumbnails on Sonarr-formatted folders, channel-art `"icon"` default on PseudoTV — all confirmed working on first deploy of `v1.20.0-madalone.1`.
+
+**Branch:** `v1.18.13-patched` renamed to `v1.20.0-patched` to match new base.
+
+**Rollback path:** backup branch `backup/pre-v1.20.0-merge` retained on both local and `origin` (= `mmadalone/integration-kodi`). To revert: `git reset --hard backup/pre-v1.20.0-merge` + delete the `v1.20.0-madalone.1` tag. Restoring the old tarball (`uc-intg-kodi-v1.18.13-madalone.8-aarch64.tar.gz`, retained at project root) is the deploy-side rollback.
+
+---
