@@ -11,6 +11,15 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
+### v1.20.0-madalone.2 — 2026-05-02
+
+**Cosmetic / docs hotfix on top of madalone.1.** No functional change.
+
+- **Fixed misleading deprecation note** for `suppress_volume_overlay`. The setup-flow checkbox label and the startup warning log both used to direct users to "UC Remote 3 Settings → UI → Show volume indicator" as the replacement. That toggle exists only in the private `Madalones-Defolded-Circle-3` firmware fork — NOT in upstream UC Remote 3 firmware. Users running this integration on stock UC firmware would look for the setting and not find it. New text is generic: "(Deprecated — no longer has any effect; setting retained for config backward compatibility)".
+- **Corrected docs** that wrongly claimed `Config.showVolumeOverlay` is in upstream `remote-ui v1.4.2+`. Touched `KODI-INTEGRATION-PATCHES.md` (patch 6 deprecation note, dropped-patches 25-27 section, patch 27 section + code excerpts), `CLAUDE.md` (patch 27 row + section), and `README.md` (patch 27 entry). Each now correctly notes the `Config.showVolumeOverlay` toggle is fork-only firmware territory; vanilla UC firmware has no equivalent.
+
+---
+
 ### v1.20.0-madalone.1 — 2026-05-02
 
 **Merged upstream `v1.20.0` into the fork.** Brings in `albaintor`'s recent work:
@@ -150,7 +159,7 @@ Diagnosed against UC Remote 3 firmware `0.38.4-32-g1266974` (pre-v1.4.9), which 
 
 - **Added** `video_only_browse_filter` per-device toggle (patch 25) — hides music and pictures browse categories, strips `.nfo`/`.srt`/`.sub` companion files from source-directory listings.
 - **Added** `suppress_unsupported_command_errors` per-device toggle (patch 26) — swallows Kodi-side JSON-RPC `ProtocolError` (e.g. Pause on a PVR channel) so they stop red-triangling on the UC3. Transport / timeout errors still surface as before.
-- **Deprecated** `suppress_volume_overlay` (patch 27) — the original feature-removal approach (patch 6) broke Kodi volume control entirely after UC Remote 3 FW v1.4.1 started respecting feature-set removals. Volume features are always advertised now; OSD hiding moved to UC Remote 3 **Settings → UI → Show volume indicator** (FW v1.4.2+). Config key retained for backward compat; one-time WARNING logged per device if set.
+- **Deprecated** `suppress_volume_overlay` (patch 27) — the original feature-removal approach (patch 6) broke Kodi volume control entirely after UC Remote 3 FW v1.4.1 started respecting feature-set removals. Volume features are always advertised now; the toggle has no functional replacement on vanilla UC firmware (OSD hiding requires the private `Madalones-Defolded-Circle-3` firmware fork's **Settings → UI → Show volume indicator** toggle). Config key retained for backward compat; one-time WARNING logged per device if set.
 - **Fixed** Netflix / plugin thumbnails not rendering on the player widget — broadened the artwork fallback chain to walk `poster → thumb → landscape → banner → fanart → clearart → icon` when the configured `artwork_type` yields nothing (patch 28).
 - **Fixed** broken/placeholder artwork on the UC3 — filters out Kodi's internal `image://Default*.png` placeholders from the art resolution path, validates HTTP 200 before base64-encoding in the `download_artwork` path (patch 29).
 - **Fixed** UC3 MediaBrowser-initiated playback showing no thumbnail when Kodi's own UI showed one — integration now detects Sonarr/Radarr-style `<basename>-thumb.jpg` sidecars, Kodi-native `.tbn` files, and folder-level `poster.jpg`/`folder.jpg`/`banner.jpg` at both browse time (free — scans the existing `Files.GetDirectory` response) and play time (one extra round-trip when primary art chain produces nothing) (patch 30).

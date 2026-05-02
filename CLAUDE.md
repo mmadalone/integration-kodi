@@ -136,7 +136,7 @@ All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is 
 | 24 | Periodic state-refresh safety net | Watchdog tick pokes `_update_states` |
 | 25 | `video_only_browse_filter` | Hide music/pictures + strip nfo/srt/sub from browse |
 | 26 | `suppress_unsupported_command_errors` | Swallow Kodi JSON-RPC ProtocolError (e.g. PVR pause) |
-| 27 | Deprecate `suppress_volume_overlay` | Feature-removal reverted; OSD hiding moves to UC3 FW `Config.showVolumeOverlay` (v1.4.2+); WARNING logged if flag still True |
+| 27 | Deprecate `suppress_volume_overlay` | Feature-removal reverted; toggle now no-op (no replacement on vanilla UC firmware — OSD hiding requires `Madalones-Defolded-Circle-3` fw fork's `Config.showVolumeOverlay`); WARNING logged if flag still True |
 | 28 | Broader artwork fallback chain | poster/thumb/landscape/banner/fanart/clearart/icon walk when primary `artwork_type` yields nothing |
 | 29 | Placeholder filter + HTTP status validation | Drops `image://Default*.png`; validates HTTP 200 before base64 encode (do **not** filter on Content-Type — Kodi omits the header) |
 | 30 | Sidecar thumbnail detection | Sonarr `<base>-thumb.jpg`, Kodi `.tbn`, folder-level `poster.jpg` resolved at browse-time (free) + play-time (1 Files.GetDirectory) |
@@ -159,7 +159,7 @@ All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is 
 
 ### Patch 6 / 27: `suppress_volume_overlay` (deprecated)
 
-Patch 6 (original) removed `Features.VOLUME` / `VOLUME_UP_DOWN` / `MUTE*` + suppressed `MediaAttr.VOLUME`/`MUTED` emission to hide the UC3 volume overlay. Patch 27 (v1.18.13-madalone.2) reverts both — the approach broke Kodi volume control entirely post remote-ui v1.4.1 (which correctly respects feature removals). Volume features are now always advertised; OSD visibility is owned by UC Remote 3 firmware v1.4.2+ via `Config.showVolumeOverlay`. The config key is retained for backcompat; a one-time WARNING is logged per device if set to `True`. Patch 6's correctness fix to `on_volume_changed` (int-comparison) is retained.
+Patch 6 (original) removed `Features.VOLUME` / `VOLUME_UP_DOWN` / `MUTE*` + suppressed `MediaAttr.VOLUME`/`MUTED` emission to hide the UC3 volume overlay. Patch 27 (v1.18.13-madalone.2) reverts both — the approach broke Kodi volume control entirely post remote-ui v1.4.1 (which correctly respects feature removals). Volume features are now always advertised; the deprecated toggle has no functional replacement on vanilla UC firmware. OSD visibility CAN be controlled when running the `Madalones-Defolded-Circle-3` firmware fork (which adds `Config.showVolumeOverlay`, surfaced as **Settings → UI → Show volume indicator**) — but this is NOT in upstream UC firmware. The config key is retained for backcompat; a one-time WARNING is logged per device if set to `True`. Patch 6's correctness fix to `on_volume_changed` (int-comparison) is retained.
 
 ---
 

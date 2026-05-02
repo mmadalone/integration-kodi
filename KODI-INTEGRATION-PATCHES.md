@@ -157,7 +157,7 @@ if self._device_config.power_off_command == "None":
 
 ## Patch 6: Suppress Volume Overlay on Remote
 
-> **⚠️ Reworked in v1.18.13-madalone.2 — see Patch 27.** The feature-removal approach below conflates entity capability with UI preference; post remote-ui v1.4.1, removing `Features.VOLUME` to hide the OSD also broke Kodi volume control entirely. Patch 27 deprecates the toggle and redirects users to remote-ui v1.4.2+ `Config.showVolumeOverlay`. The config key is retained for backwards compat; the feature-removal + attribute-suppression behavior below is **no longer active**.
+> **⚠️ Reworked in v1.18.13-madalone.2 — see Patch 27.** The feature-removal approach below conflates entity capability with UI preference; post remote-ui v1.4.1, removing `Features.VOLUME` to hide the OSD also broke Kodi volume control entirely. Patch 27 deprecates the toggle (no functional replacement in vanilla UC3 firmware — OSD hiding requires the `Madalones-Defolded-Circle-3` firmware fork's `Config.showVolumeOverlay` toggle, which is NOT in upstream remote-ui as of this writing). The config key is retained for backwards compat; the feature-removal + attribute-suppression behavior below is **no longer active**.
 
 **Files:** `src/config.py`, `src/kodi_device.py`, `src/setup_fields.py`, `src/setup_flow.py`
 
@@ -421,7 +421,7 @@ Three integration-side toggles were drafted during this release cycle: `suppress
 
 - **Why it looked correct on paper.** Remote-ui's device-class QMLs (e.g. `Receiver.qml:549,567`) gate the shuffle/repeat icons with `visible: entityObj.hasFeature(MediaPlayerFeatures.Shuffle)`. Strip the feature, hide the icon. Straightforward.
 - **Why it fails in practice.** `driver.py:_configure_new_device` reuses the existing `KodiDevice` on reconfigure (line 325-326). `_register_available_entities` updates `api.available_entities`, but **not** `api.configured_entities` — the entities already subscribed to activities on the UC3. The ucapi protocol has `update_attributes` and `subscribe`/`unsubscribe` events but no `features_changed` event. So the remote's activity-side cache keeps the old feature list. Even a remote reboot doesn't clear it (persisted state). The only reliable way to pick up new features is a full integration uninstall + reinstall + fresh setup — unacceptable UX for a "toggle a checkbox" action.
-- **Same architectural mistake as patch 6** (`suppress_volume_overlay`). Hiding UI by removing entity capabilities conflates "what the entity can do" with "what the user wants to see in the UI". Volume got this right by moving the concern to `UC-Remote-UI` `Config.showVolumeOverlay` (v1.4.2). Shuffle/Repeat/MediaBrowser will follow the same pattern in a future remote-ui release (`Config.showShuffleButton`, `Config.showRepeatButton`, `Config.showMediaBrowserButton` — single QML `visible:` binding each, ~20 lines, no entity-feature games).
+- **Same architectural mistake as patch 6** (`suppress_volume_overlay`). Hiding UI by removing entity capabilities conflates "what the entity can do" with "what the user wants to see in the UI". The right fix is moving the concern to a `Config.show*` toggle on the remote-ui side. We did this for volume in our private firmware fork (`Madalones-Defolded-Circle-3`) via `Config.showVolumeOverlay`; the same pattern would work upstream for shuffle/repeat/media-browser (`Config.showShuffleButton`, `Config.showRepeatButton`, `Config.showMediaBrowserButton` — single QML `visible:` binding each, ~20 lines, no entity-feature games). None of these `show*` toggles are in upstream UC firmware as of this writing.
 - **Config-field residue.** The three fields (`suppress_media_browser`, `suppress_shuffle`, `suppress_repeat`) are retained in `KodiConfigDevice` with `default=False` so that existing `config.json` files from v1.18.13-madalone.2 pre-release builds still load without `TypeError`. They are no longer settable via setup/reconfigure and no code reads them. A future release may remove them entirely.
 
 ---
@@ -497,7 +497,7 @@ Remote-ui v1.4.1 added feature-check guards (`mediaPlayer.cpp` / `volume.start()
 
 **Root cause:** removing features to hide UI is the wrong knob. UI preferences belong in the remote-ui `Config`, not in the integration's advertised entity capabilities.
 
-**Solution:** Deprecate the toggle and redirect users to remote-ui v1.4.2+ (shipped 2026-04-24, commit `08e193e`) where `Config.showVolumeOverlay` controls OSD visibility independently of entity features.
+**Solution:** Deprecate the toggle outright. There is no functional replacement in vanilla UC Remote 3 firmware — the OSD always fires on volume events. Hiding the OSD requires running the `Madalones-Defolded-Circle-3` firmware fork (commit `08e193e`, 2026-04-24), which adds a `Config.showVolumeOverlay` toggle controlled via **Settings → UI → Show volume indicator**. Users on stock UC firmware live with the OSD.
 
 1. `src/kodi_device.py` `__init__`: **delete the feature-removal block** for `suppress_volume_overlay`. Volume features are now always advertised.
 2. `src/kodi_device.py`: **delete 4 MediaAttr emission guards**:
@@ -512,9 +512,9 @@ Remote-ui v1.4.1 added feature-check guards (`mediaPlayer.cpp` / `volume.start()
 ```python
 if device_config.suppress_volume_overlay:
     _LOG.warning(
-        "[%s] suppress_volume_overlay is deprecated: volume features are now advertised. "
-        "To hide the on-screen volume indicator, use UC Remote 3 Settings > UI > "
-        "Show volume indicator (requires remote-ui v1.4.2+).",
+        "[%s] suppress_volume_overlay is deprecated and no longer has any effect; "
+        "volume features are now advertised regardless. The setting is retained "
+        "only for config backward compatibility.",
         device_config.address,
     )
 ```
@@ -522,9 +522,11 @@ if device_config.suppress_volume_overlay:
 4. `src/setup_fields.py`: rewrite the checkbox label to indicate deprecation:
 
 ```
-en: "(Deprecated — use UC Remote 3 Settings > UI > Show volume indicator instead) Suppress volume overlay on remote"
-fr: "(Obsolète — utilisez UC Remote 3 Paramètres > UI > Afficher l'indicateur de volume) Masquer l'indicateur de volume sur la telecommande"
+en: "(Deprecated — no longer has any effect; setting retained for config backward compatibility) Suppress volume overlay on remote"
+fr: "(Obsolète — sans effet ; paramètre conservé pour compatibilité ascendante) Masquer l'indicateur de volume sur la telecommande"
 ```
+
+**Why no upstream-firmware redirect?** Earlier drafts of this section referred users to `remote-ui v1.4.2+ Config.showVolumeOverlay` — that was wrong. `Config.showVolumeOverlay` exists only in the private `Madalones-Defolded-Circle-3` firmware fork, NOT in upstream UC Remote 3 firmware. Users running this integration on stock UC firmware have no way to hide the OSD; the fix lives entirely on the firmware side.
 
 **Retained from patch 6:** the `on_volume_changed()` bug fix at line 477 (`volume != int(self._app_properties["volume"])`, replacing the always-false `volume != self._volume`) is orthogonal to the OSD concern and stays.
 
@@ -533,7 +535,7 @@ fr: "(Obsolète — utilisez UC Remote 3 Paramètres > UI > Afficher l'indicateu
 **User impact on upgrade from `v1.18.13-madalone.1`:**
 - Users who had `suppress_volume_overlay=True` will see one WARNING log per device on start.
 - Volume +/- buttons now correctly change Kodi volume (was broken in `.1` after remote-ui v1.4.1).
-- The OSD fires on volume events. For OSD hiding, install remote-ui v1.4.2+ and set `Config.showVolumeOverlay=false` in UC Remote 3 Settings.
+- The OSD fires on volume events. For OSD hiding, the `Madalones-Defolded-Circle-3` firmware fork is required (set `Config.showVolumeOverlay=false` via **Settings → UI → Show volume indicator**). Vanilla UC firmware has no equivalent; the OSD will always appear on volume change.
 
 ---
 
