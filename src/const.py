@@ -377,6 +377,27 @@ KODI_ADVANCED_SIMPLE_COMMANDS: dict[str, MethodCall | str] = {
         "params": {"button": "escape", "keymap": "KB"},
         "holdtime": None,
     },
+    # Patch 45: simulate keyboard `r` keypress via Input.ButtonEvent — same routing-
+    # through-keymap mechanism as MODE_KEYPRESS_C (patch 33) and MODE_KEYPRESS_ESC
+    # (patch 35). Kodi's keyboard string translator normalizes single letters to
+    # uppercase ASCII and ORs KEY_VKEY (0xF000), so "r" becomes 'R' (0x52) | 0xF000
+    # = 0xF052 = 61522 — matches a Harmony-style keymap entry of the form:
+    #
+    #   <global>          <key id="61522">activatewindow(tvguide)</key>
+    #   <fullscreenvideo> <key id="61522">activatewindow(tvguide)</key>
+    #   <tvguide>         <key id="61522">activatewindow(fullscreenvideo)</key>
+    #
+    # When the user has those bindings, MODE_TVGUIDE acts as a true bidirectional
+    # toggle (open guide ↔ exit to fullscreen video), routed through Kodi's keymap
+    # exactly as a physical Harmony "Guide" press would be.
+    #
+    # No-op for users without a `<keyboard><key id="61522">` (or equivalent `<key
+    # id="r">`) binding — Kodi receives the `r` keypress but has no action to route.
+    "MODE_TVGUIDE": {
+        "method": "Input.ButtonEvent",
+        "params": {"button": "r", "keymap": "KB"},
+        "holdtime": None,
+    },
 }
 
 KODI_ALTERNATIVE_BUTTONS_KEYMAP: dict[str, MethodCall] = {

@@ -6,7 +6,7 @@ All upstream features (including the v1.20.0 PVR/Addons browsing and Favourites 
 
 Requires remote firmware `>= 1.7.10`.
 
-**Current build:** `v1.20.0-madalone.1` (2026-05-02). See [`CHANGELOG.md`](CHANGELOG.md) for release history and [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md) for per-patch implementation notes.
+**Current build:** `v1.20.0-madalone.3` (2026-05-04). See [`CHANGELOG.md`](CHANGELOG.md) for release history and [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md) for per-patch implementation notes.
 
 ## Patches
 

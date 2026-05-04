@@ -10,6 +10,20 @@ Built from tag `v1.18.13` of [albaintor/integration-kodi](https://github.com/alb
 
 ---
 
+## Patch Design Discipline (scan before drafting patch N+1)
+
+| ID    | Sev | Trigger                                                                                  | Action |
+|-------|-----|------------------------------------------------------------------------------------------|--------|
+| AP-K1 | ❌  | Hiding a UI element by removing entity `Features.*`                                      | Stop. UI hiding belongs in remote-ui `Config.show*`, not integration features. |
+| AP-K2 | ❌  | Mutating artwork-block state without auditing all 3+ guard predicates                    | Map gating, walk 2-3 watchdog ticks; prefer state machine or eliminate shared state. |
+| AP-K3 | ⚠️  | Symptom is rendering (blank/stale), not data                                             | Wire capture + `GET /api/entities/<id>` BEFORE patching. Firmware first. |
+| AP-K4 | ⚠️  | Defaulting a Kodi-shape-dependent config from one PVR/source                             | Validate on ≥3 source classes (library + real PVR + plugin) first. |
+| AP-K5 | ℹ️  | 3+ targeted patches on one subsystem in one release window (Divergent Change)            | Stop. Refactor before patch #4. |
+
+Full prose + patch references in `CLAUDE.md` § Fork Design Discipline. See also `STYLE_GUIDE.md` §5 (broader anti-patterns), §9 (patch anatomy template).
+
+---
+
 ## Patch 1: Kodi Label Formatting Tag Stripping
 
 **File:** `src/kodi_device.py`
@@ -1572,5 +1586,56 @@ Merged upstream `main` (tag `v1.20.0`, commit `d3ec217`) into `v1.18.13-patched`
 **Branch:** `v1.18.13-patched` renamed to `v1.20.0-patched` to match new base.
 
 **Rollback path:** backup branch `backup/pre-v1.20.0-merge` retained on both local and `origin` (= `mmadalone/integration-kodi`). To revert: `git reset --hard backup/pre-v1.20.0-merge` + delete the `v1.20.0-madalone.1` tag. Restoring the old tarball (`uc-intg-kodi-v1.18.13-madalone.8-aarch64.tar.gz`, retained at project root) is the deploy-side rollback.
+
+---
+
+## Patch 45: `MODE_TVGUIDE` Simple Command (`v1.20.0-madalone.3`)
+
+**File:** `src/const.py`
+
+**Problem:** The standard ucapi `Commands.GUIDE` is mapped at `const.py:304` as `ButtonKeymap("guide", "R1")` — it sends Kodi an `Input.ButtonEvent(button="guide", keymap="R1")`, which routes through Kodi's `<remote>` keymap. This works only if the user's Kodi has a `<remote>` keymap entry mapping the `guide` button to `activatewindow(tvguide)`.
+
+Users running Kodi with a custom `<keyboard>` keymap (typical Harmony setup — Harmony emits a keyboard letter, e.g. `r`, when its Guide button is pressed; the user maps that letter in `keymap.xml` `<keyboard>` context to `activatewindow(tvguide)`) have a working keyboard mapping but no `<remote>` mapping. `Commands.GUIDE` does nothing for them. They also want the **bidirectional toggle behavior** their keymap defines:
+
+```xml
+<global>          <key id="61522">activatewindow(tvguide)</key>
+<fullscreenvideo> <key id="61522">activatewindow(tvguide)</key>
+<tvguide>         <key id="61522">activatewindow(fullscreenvideo)</key>
+```
+
+(Where `id="61522"` decodes as `KEY_VKEY | 'R'` = `0xF000 | 0x52` = `0xF052` — Kodi's internal code for keyboard letter `R` when received as a virtual-key event. Single letter "r" or "R" both produce this code through Kodi's keyboard string translator, which uppercase-normalizes and ORs `KEY_VKEY`.)
+
+**Approaches considered (in order tested):**
+
+1. **`GUI.ActivateWindow(window="tvguide")`** — "always opens, never closes." No toggle. Rejected.
+2. **`Input.ButtonEvent(button="61522", keymap="KB")`** — pass the raw VK code as a numeric string. Kodi's `TranslateKeyboardString` should accept numeric strings via the `IsNaturalNumber` path, but on Kodi 21.x the resulting `CKey` event doesn't reach the same keymap dispatch as a physical keypress (likely the construction path differs from the kernel-keypress path). Empirically: no-op. Rejected.
+3. **Integration-side toggle** — query Kodi for `currentwindow` via `GUI.GetProperties`, branch on the result, call the appropriate `GUI.ActivateWindow`. Built and tested as an interim. Works, but has 50ms extra latency and doesn't honor the user's keymap (so any custom keymap edits the user makes are bypassed). Rejected once approach 4 became viable.
+4. **`Input.ButtonEvent(button="r", keymap="KB")`** — single-letter input goes through the letter-normalization + `KEY_VKEY`-OR path of Kodi's keyboard string translator, producing the right internal code (`0xF052` = 61522) to match the user's `<key id="61522">` binding directly. **Adopted.** Same shape as patch 33's `MODE_KEYPRESS_C` and patch 35's `MODE_KEYPRESS_ESC`.
+
+**Implementation (final):**
+
+```python
+"MODE_TVGUIDE": {
+    "method": "Input.ButtonEvent",
+    "params": {"button": "r", "keymap": "KB"},
+    "holdtime": None,
+},
+```
+
+The user's `<keyboard>` keymap now controls behavior:
+- From `<global>` or `<fullscreenvideo>` → opens guide
+- From `<tvguide>` → exits to fullscreen video (the keymap's reverse-mapping handles the toggle)
+
+Pure registry change; no new methods on `KodiDevice` or special cases in `media_player.py`.
+
+**Why a new simple command and not just rebinding `Commands.GUIDE`:** `Commands.GUIDE` follows the upstream / ucapi-spec convention (route through Kodi's `<remote>` keymap, which is the canonical path). Rebinding it would deviate from that convention and surprise users whose `<remote>` keymap is correctly configured. The new `MODE_TVGUIDE` is additive.
+
+**User impact:** works for users with a `<keyboard>` keymap binding the `r` key (or `<key id="61522">`) to a tvguide-related action. No-op for users without that binding — Kodi receives the keypress but has no action to route. Consistent with the rest of the keypress simple-command family (`MODE_KEYPRESS_C`, `MODE_KEYPRESS_ESC`).
+
+**Naming:** `MODE_*` prefix matches the existing fork convention for additional simple commands (patches 31-35). Per UC's [command name patterns spec](https://github.com/unfoldedcircle/core-api/blob/main/doc/entities/entity_media_player.md#command-name-patterns), `KEYPRESS_*` would be more accurate (this is functionally `MODE_KEYPRESS_R`); flagged for future renaming when patches 31-35+ are eventually unified.
+
+**Anti-pattern check:** does not trigger AP-K1 (no `Features.*` removal), AP-K2 (no artwork-block state mutation), AP-K3 (not a rendering symptom), AP-K4 (no PVR-shape config defaulting), or AP-K5 (single targeted addition, not 3+ patches in a release window).
+
+**Regressions considered:** the new entry is additive in a dict; existing call sites for `Commands.GUIDE` and other advanced simple commands are unaffected.
 
 ---

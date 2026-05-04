@@ -11,6 +11,14 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
+### v1.20.0-madalone.3 — 2026-05-04
+
+**New simple command on top of madalone.2.**
+
+- **Added** `MODE_TVGUIDE` simple command (patch 45). Sends `Input.ButtonEvent(button="r", keymap="KB")` — Kodi's keyboard string translator turns a single letter into `KEY_VKEY | 'R'` = `0xF052` = 61522 internally, matching a Harmony-style `<keyboard><key id="61522">` keymap entry. For users with bindings to `activatewindow(tvguide)` in `<global>` / `<fullscreenvideo>` and `activatewindow(fullscreenvideo)` in `<tvguide>`, this gives a true bidirectional toggle: opens the guide if not in it, exits to fullscreen video if already in it. Routed entirely through the user's keymap; no new methods on `KodiDevice`. Three earlier approaches were tested and rejected: blunt `GUI.ActivateWindow(tvguide)` (opens but doesn't close), `Input.ButtonEvent` with the numeric `"61522"` button (Kodi rejected the raw VK string silently on 21.x), and an integration-side toggle that queried `currentwindow` and branched (worked but bypassed the user's keymap and added a 50ms round-trip).
+
+---
+
 ### v1.20.0-madalone.2 — 2026-05-02
 
 **Cosmetic / docs hotfix on top of madalone.1.** No functional change.

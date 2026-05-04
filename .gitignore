@@ -112,3 +112,6 @@ artifacts/
 CLAUDE.md
 .claude-memory/
 .claude/
+
+# Local diagnostic / spec caches dumped by ad-hoc tooling
+.cache_*
