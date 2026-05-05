@@ -1639,3 +1639,37 @@ Pure registry change; no new methods on `KodiDevice` or special cases in `media_
 **Regressions considered:** the new entry is additive in a dict; existing call sites for `Commands.GUIDE` and other advanced simple commands are unaffected.
 
 ---
+
+## Upstream Merge to v1.20.1 (2026-05-04)
+
+Merged upstream `main` (tag `v1.20.1`, commit `26692c4`) into `v1.20.0-patched` via `git merge --no-ff`. 8 upstream commits picked up, all from PR #23 (Serph91P, "kodi-favorites-and-livetv-improvements"). All 45 fork patches preserved through the merge.
+
+**Upstream changes pulled in:**
+- **`8ae31ff` `fix(favorites): rewrite Kodi PVR favourite URLs to internal media ids`** — favourites with PVR URLs were unusable for browsing; now rewritten to internal media ids.
+- **`9ffd0cd` `feat(livetv): add show_channel_groups setup toggle (default on)`** — when off, the channel-groups level is skipped and channels are listed directly via the `allTV`/`allRadio` group. New checkbox in setup flow.
+- **`4b9ac3c` `chore(ui): strip Kodi BBCode formatting from titles, subtitles and metadata`** — extends upstream's `strip_kodi_formatting` to subtitles + metadata. **Triggered our patch 1 deduplication** — see "Patch 1 deduplication" below.
+- **`89de749` `fix(audit): guard against None label in os.path.splitext`**
+- **`cadf7c8` `fix(lint): remove extra arg in get_item_from_channel call and apply black formatting`**
+
+**Auto-merged cleanly (Git resolved both sides):** `src/config.py` (new `show_channel_groups` field at end of dataclass — clean append), `src/setup_fields.py` (new checkbox added to SETUP_FIELDS list — different field id from ours, no collision), `src/setup_flow.py` (5 touch-points for `show_channel_groups` — different field id, no collision), `src/media_browser.py` (upstream's BBCode-strip extension + favourite URL rewrite landed in regions our patches don't touch — clean), `src/favorites.py` (upstream-only file, took upstream's changes), `CHANGELOG.md` (auto-merged upstream's bullet additions into our preserved doc).
+
+**Manually resolved (2 files):**
+- `README.md` — kept ours verbatim (current-build line bumped to `v1.20.1-madalone.1` in subsequent doc-audit pass)
+- `driver.json` — kept ours; bumped version to `v1.20.1-madalone.1`, release_date already `2026-05-04`
+
+**Patch 1 deduplication (the big follow-up of this merge):** upstream's expanded `strip_kodi_formatting` covers titles + subtitles + metadata; our local `_strip_kodi_formatting` in `kodi_device.py` covered only `media_title` in real-time updates. Two functions doing equivalent work with slightly different regex coverage. Resolved by:
+- Deleting `_KODI_MARKUP_RE` and `_strip_kodi_formatting` from `src/kodi_device.py`.
+- Removing the now-unused `import re` (only the deleted regex used it).
+- Switching the use site at `_update_states` to call `media_browser.strip_kodi_formatting(...)` directly (`media_browser` was already imported at module level).
+
+Net result: –12 LOC in `kodi_device.py`, broader regex coverage at the playback-update site (handles `U`/`S`/`FONT` tags + whitespace-collapse that our local regex didn't), no local maintenance burden going forward. Phase 0 PR triage flagged this specific dedup as the "REWORK — drop our helper, reuse upstream's" recommendation for any future upstream PR — done as part of this merge instead.
+
+**Lint:** black clean (no reformats); pylint 10/10, flake8 0 errors, isort clean.
+
+**Smoke-tested on UC Remote 3 against Kodi 21.x (madteevee):** patch 45 `MODE_TVGUIDE` still toggles correctly (key 'r' keypress routed through user's `<keyboard>` keymap); upstream's new `show_channel_groups` setup toggle visible in reconfigure flow; favourites list with PVR URLs renders without errors.
+
+**Branch:** `v1.20.0-patched` renamed to `v1.20.1-patched` to match new base.
+
+**Rollback path:** backup branch `backup/pre-v1.20.1-merge` retained on both local and `origin`. To revert: `git reset --hard backup/pre-v1.20.1-merge` + delete the `v1.20.1-madalone.1` tag. The previous release tarball (`uc-intg-kodi-v1.20.0-madalone.2-aarch64.tar.gz`, retained at project root) is the deploy-side rollback.
+
+---

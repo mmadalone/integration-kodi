@@ -11,7 +11,26 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
-### v1.20.0-madalone.3 — 2026-05-04
+### v1.20.1-madalone.1 — 2026-05-04
+
+**Merged upstream `v1.20.1` into the fork.** Brings in `albaintor`'s PR #23 (Serph91P, "kodi-favorites-and-livetv-improvements"):
+
+- **Favourites bug fix** — Kodi PVR favourite URLs now rewritten to internal media ids (the previous form was unusable for browsing).
+- **`show_channel_groups` setup toggle** (default on) — when off, the channel-groups level is skipped and channels are listed directly via the `allTV`/`allRadio` group. Available in setup as a new checkbox.
+- **Stronger BBCode strip** — upstream's `strip_kodi_formatting` now applied to subtitles + metadata in addition to titles. Our patch 1 (BBCode strip in `kodi_device.py`) was deduplicated against this: dropped the local `_strip_kodi_formatting` helper + `_KODI_MARKUP_RE`, switched the `media_title` cleanup site in `_update_states` to call `media_browser.strip_kodi_formatting` directly. Net –12 LOC, broader regex coverage (covers `U`/`S`/`FONT` + whitespace-collapse), no local maintenance burden.
+- **Audit fixes** — guard against `None` label in `os.path.splitext`, lint cleanup in `get_item_from_channel`.
+
+All 45 fork patches preserved through the merge. Conflicts: only `README.md` and `driver.json` (kept ours, bumped to `1.20.1-madalone.1`); all source files auto-merged cleanly. Patch 45 (`MODE_TVGUIDE`) — added in unreleased `v1.20.0-madalone.3` — included.
+
+**Branch renamed:** `v1.20.0-patched` → `v1.20.1-patched`.
+
+Full merge details in [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md) under "Upstream Merge to v1.20.1".
+
+---
+
+### v1.20.0-madalone.3 — 2026-05-04 *(unreleased — superseded by v1.20.1-madalone.1)*
+
+**Local-only build, never tagged on GitHub.** Patch 45 work (MODE_TVGUIDE simple command) was developed and smoke-tested here, then rolled into the v1.20.1 merge above. Kept as a CHANGELOG entry for transparency.
 
 **New simple command on top of madalone.2.**
 

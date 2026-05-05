@@ -10,7 +10,6 @@ import base64
 import datetime
 import logging
 import random
-import re
 import time
 import urllib.parse
 from asyncio import AbstractEventLoop, Future, Lock, Task, shield
@@ -97,18 +96,12 @@ def _log_task_exception(task: asyncio.Task) -> None:
         _LOG.error("Unhandled exception in background task: %s", task.exception())
 
 
-# Regex for stripping Kodi label formatting tags: [COLOR name], [/COLOR], [B], [I], [CR], etc.
-# Reference: https://kodi.wiki/view/Label_Formatting
-_KODI_MARKUP_RE = re.compile(
-    r"\[(?:COLOR\s[^\]]+|/COLOR|/?(?:B|I|LIGHT|UPPERCASE|LOWERCASE|CAPITALIZE)|CR)\]", re.IGNORECASE
-)
-
-
-def _strip_kodi_formatting(text: str) -> str:
-    """Strip Kodi label formatting tags ([COLOR], [B], [I], etc.)."""
-    if not text or "[" not in text:
-        return text
-    return _KODI_MARKUP_RE.sub("", text).strip()
+# Patch 1 BBCode-strip helper deduplicated against upstream's broader version
+# (`media_browser.strip_kodi_formatting`, added in v1.20.0 PR #20, expanded in
+# v1.20.1 PR #23 to cover subtitles + metadata). Use site at media_title in
+# `_update_states` now imports + reuses upstream's function — same effect at
+# the playback-update site, broader regex coverage (handles `U`/`S`/`FONT`
+# plus whitespace-collapse), no local maintenance burden.
 
 
 class Events(StrEnum):
@@ -1435,7 +1428,7 @@ class KodiDevice(IKodiDevice):
                         # retries instead of skipping the artwork block.
                         asyncio.create_task(self._update_states(deferred=4)).add_done_callback(_log_task_exception)
 
-                media_title = _strip_kodi_formatting(
+                media_title = media_browser.strip_kodi_formatting(
                     self._item.get("title") or self._item.get("label") or self._item.get("file") or ""
                 )
                 if self.device_config.show_stream_name:

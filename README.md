@@ -1,12 +1,12 @@
 # Kodi Integration for Unfolded Circle Remote 3 (Patched Fork)
 
-Fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (currently rebased onto **v1.20.0**) with bug fixes for title formatting, artwork loading, playback state, and power-off control, plus additional setup-flow toggles and simple commands.
+Fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (currently rebased onto **v1.20.1**) with bug fixes for title formatting, artwork loading, playback state, and power-off control, plus additional setup-flow toggles and simple commands.
 
-All upstream features (including the v1.20.0 PVR/Addons browsing and Favourites support) are inherited as-is. All credit for the integration itself goes to [Albaintor](https://github.com/albaintor). This fork applies targeted patches only — no upstream logic has been altered.
+All upstream features (including the v1.20.0 PVR/Addons browsing + Favourites support and the v1.20.1 livetv/favourites improvements) are inherited as-is. All credit for the integration itself goes to [Albaintor](https://github.com/albaintor). This fork applies targeted patches only — no upstream logic has been altered.
 
 Requires remote firmware `>= 1.7.10`.
 
-**Current build:** `v1.20.0-madalone.3` (2026-05-04). See [`CHANGELOG.md`](CHANGELOG.md) for release history and [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md) for per-patch implementation notes.
+**Current build:** `v1.20.1-madalone.1` (2026-05-04). See [`CHANGELOG.md`](CHANGELOG.md) for release history and [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md) for per-patch implementation notes.
 
 ## Patches
 
