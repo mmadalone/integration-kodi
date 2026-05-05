@@ -113,15 +113,26 @@ Seven new bindable entries in the UC3 Remote entity's simple-command picker — 
 
 - **`MODE_CONTEXT_MENU`** (patch 31) — unconditional `Input.ContextMenu` (always opens the context menu, bypass Kodi keymap).
 - **`MODE_PLAY_SELECTED`** (patch 32) — Kodi's context-sensitive `play` action. Plays the currently focused folder/item in the Kodi UI (matches Harmony PLAY button behavior).
-- **`MODE_KEYPRESS_C`** (patch 33) — simulates keyboard `c` via `Input.ButtonEvent`. Routes through Kodi's keymap so you get per-window context: `contextmenu` globally, `queue` in `<FullscreenVideo>`, whatever your custom keymap defines.
 - **`MODE_CODEC_INFO`** (patch 34) — toggles the codec-info overlay during playback.
 - **`MODE_PLAYER_DEBUG`** (patch 34) — toggles the player debug overlay (CPU/GPU/FPS/dropped frames).
 - **`MODE_SYSTEM_MENU`** (patch 34) — opens Kodi's shutdown menu (Exit / Power off / Reboot / Hibernate / Suspend / Custom shutdown timer / Minimize / Inhibit idle shutdown).
-- **`MODE_KEYPRESS_ESC`** (patch 35) — simulates keyboard Esc via `Input.ButtonEvent`. Context-aware through the keymap: close dialog / previous menu / stop / shutdown menu depending on the focused Kodi window.
 
-Underlying mechanism distinction:
-- `Input.ExecuteAction(...)` calls (used by most simple commands) — direct named action, bypass keymap.
-- `Input.ButtonEvent(...)` calls (patches 33, 35) — simulate a key/button press, route through `keymap.xml`, respect per-window overrides. Use these when you want physical-keyboard parity with a setup (e.g. Harmony remote configurations).
+**Retired in v1.20.1-madalone.2** — `MODE_KEYPRESS_C` (patch 33), `MODE_KEYPRESS_ESC` (patch 35), and `MODE_TVGUIDE` (patch 45). All three were thin aliases for `Input.ButtonEvent(button=X, keymap="KB")` — equivalent to the existing custom-command `"key X"` syntax (see "Custom-command syntax" below). Removed to keep the simple-commands list focused.
+
+### Custom-command syntax
+
+The Remote entity's "Send command" action (and the media-player entity's `custom_command`) accept a few prefix forms beyond the named simple commands. Type any of these in the activity-button "Command" field:
+
+- **`key <button> [<keymap>] [<holdtime>]`** — fires `Input.ButtonEvent`. Examples: `key c` (keyboard `c`), `key escape` (Esc), `key r` (replaces retired `MODE_TVGUIDE` for Harmony users with `<key id="61522">` mapped to `activatewindow(tvguide)`), `key f1 KB 500` (F1 with 500ms hold), `key guide R1` (Guide button on remote keymap).
+- **`action <name>`** — fires `Input.ExecuteAction(name)`. Examples: `action codecinfo`, `action playerdebug`, `action queue`.
+- **`activatewindow <window>`** — fires `GUI.ActivateWindow(window)`. Examples: `activatewindow tvguide`, `activatewindow shutdownmenu`, `activatewindow settings`.
+- **`viewmode <mode>` / `zoom <in|out|N>` / `speed <increment|decrement|N>` / `audiodelay <float>` / `stereoscopimode <mode>`** — Kodi-specific actions with one parameter.
+
+Any other command falls through to a raw Kodi JSON-RPC method call (the first token is the method name, optional second token a Python-literal dict of params).
+
+Underlying mechanism distinction (relevant when picking between named simple commands and `custom_command` syntax):
+- `Input.ExecuteAction(...)` — direct named action, bypass keymap.
+- `Input.ButtonEvent(...)` — simulate a key/button press, route through `keymap.xml`, respect per-window overrides. Use this (via `key <X>`) when you want physical-keyboard parity with a setup (e.g. Harmony remote configurations).
 
 Also in this release:
 - **`build.yml` workflow fixes** — removed the upstream Docker Hub publish job (fork has no counterpart namespace), added `permissions: contents: write` so the GitHub Release job can now auto-publish the tar.gz asset on tag push.

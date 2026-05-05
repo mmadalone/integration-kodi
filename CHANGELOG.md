@@ -11,6 +11,15 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
+### v1.20.1-madalone.2 — 2026-05-05
+
+**Cleanup hotfix on top of madalone.1.** Retires three redundant keypress aliases.
+
+- **Retired** `MODE_KEYPRESS_C` (patch 33), `MODE_KEYPRESS_ESC` (patch 35), and `MODE_TVGUIDE` (patch 45). All three were thin aliases for `Input.ButtonEvent(button=X, keymap="KB")` and are reachable via the existing `custom_command "key X"` syntax: `key c`, `key escape`, `key r` respectively. Removed from `KODI_ADVANCED_SIMPLE_COMMANDS` to keep the simple-commands list focused. Patch sections retained in `KODI-INTEGRATION-PATCHES.md` with RETIRED markers + reasoning. Documented the broader `custom_command` prefix syntax (`key X`, `action X`, `activatewindow X`, etc.) in README so users know the alternatives.
+- **Patch count:** 45 → 42 active (3 retired, kept as historical patch records).
+
+---
+
 ### v1.20.1-madalone.1 — 2026-05-04
 
 **Merged upstream `v1.20.1` into the fork.** Brings in `albaintor`'s PR #23 (Serph91P, "kodi-favorites-and-livetv-improvements"):

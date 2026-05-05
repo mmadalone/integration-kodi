@@ -755,9 +755,11 @@ Exposed in the UC3 Remote entity's simple-command picker. User binds it to any b
 
 ---
 
-## Patch 33: `MODE_KEYPRESS_C` Simple Command (context-aware via Input.ButtonEvent)
+## Patch 33: `MODE_KEYPRESS_C` Simple Command (context-aware via Input.ButtonEvent) — ⚠️ RETIRED in v1.20.1-madalone.2 (2026-05-05)
 
-**File:** `src/const.py`
+> **⚠️ Retired in v1.20.1-madalone.2.** This dedicated simple command sent the exact same `Input.ButtonEvent(button="c", keymap="KB")` that the existing `custom_command "key c"` syntax sends. Pure alias for discoverability. Removed from `KODI_ADVANCED_SIMPLE_COMMANDS` to keep the simple-commands list focused. Users wanting this behavior type `key c` in the activity-button "Send command" field. Keeping the section here for historical context — design intent unchanged, only the registration was removed.
+
+**File:** `src/const.py` (entry removed in v1.20.1-madalone.2)
 
 **Problem:** Patch 31's `MODE_CONTEXT_MENU` always triggers the Kodi `contextmenu` action regardless of which Kodi window is focused. A Logitech Harmony remote's MENU button, however, sends keycode `61507` (= `0xF043` = virtual key `C`) to Kodi, which Kodi then routes through `system/keymaps/keyboard.xml`'s per-window hierarchy:
 
@@ -816,9 +818,11 @@ No new plumbing; all three dispatch through the existing `KODI_ADVANCED_SIMPLE_C
 
 ---
 
-## Patch 35: `MODE_KEYPRESS_ESC` Simple Command (Esc-key simulation)
+## Patch 35: `MODE_KEYPRESS_ESC` Simple Command (Esc-key simulation) — ⚠️ RETIRED in v1.20.1-madalone.2 (2026-05-05)
 
-**File:** `src/const.py`
+> **⚠️ Retired in v1.20.1-madalone.2.** Same reasoning as patch 33: equivalent to `custom_command "key escape"`, which the existing keymap-routing path supports. Removed from `KODI_ADVANCED_SIMPLE_COMMANDS`. Users type `key escape` instead.
+
+**File:** `src/const.py` (entry removed in v1.20.1-madalone.2)
 
 **Problem:** Users coming from keyboard-centric or Harmony-centric Kodi setups expected an "Exit" button that behaves like the physical Esc key — which, crucially, is **context-sensitive** in Kodi's default keymap:
 
@@ -1589,9 +1593,11 @@ Merged upstream `main` (tag `v1.20.0`, commit `d3ec217`) into `v1.18.13-patched`
 
 ---
 
-## Patch 45: `MODE_TVGUIDE` Simple Command (`v1.20.0-madalone.3`)
+## Patch 45: `MODE_TVGUIDE` Simple Command (`v1.20.0-madalone.3`) — ⚠️ RETIRED in v1.20.1-madalone.2 (2026-05-05)
 
-**File:** `src/const.py`
+> **⚠️ Retired one day after merge into v1.20.1-madalone.1, in v1.20.1-madalone.2.** The dedicated `MODE_TVGUIDE` simple command was a pure alias for `custom_command "key r"` — the user (and any other Harmony-style keymap user) can type `key r` in the activity-button "Send command" field and get the same `Input.ButtonEvent(button="r", keymap="KB")` routed through `<keyboard>` keymap, including the bidirectional toggle behavior from `<tvguide>` context. Same reasoning as patches 33 + 35: pure alias, no functional uniqueness. Removed from `KODI_ADVANCED_SIMPLE_COMMANDS`. The full design notes below are kept for historical context — they document the three-iteration arc (`GUI.ActivateWindow` → numeric `Input.ButtonEvent("61522")` → integration-side toggle → letter-name `Input.ButtonEvent("r")`) that led to discovering Kodi's keyboard-string translator behavior.
+
+**File:** `src/const.py` (entry removed in v1.20.1-madalone.2)
 
 **Problem:** The standard ucapi `Commands.GUIDE` is mapped at `const.py:304` as `ButtonKeymap("guide", "R1")` — it sends Kodi an `Input.ButtonEvent(button="guide", keymap="R1")`, which routes through Kodi's `<remote>` keymap. This works only if the user's Kodi has a `<remote>` keymap entry mapping the `guide` button to `activatewindow(tvguide)`.
 
