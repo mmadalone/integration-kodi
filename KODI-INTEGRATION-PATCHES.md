@@ -1679,3 +1679,51 @@ Net result: –12 LOC in `kodi_device.py`, broader regex coverage at the playbac
 **Rollback path:** backup branch `backup/pre-v1.20.1-merge` retained on both local and `origin`. To revert: `git reset --hard backup/pre-v1.20.1-merge` + delete the `v1.20.1-madalone.1` tag. The previous release tarball (`uc-intg-kodi-v1.20.0-madalone.2-aarch64.tar.gz`, retained at project root) is the deploy-side rollback.
 
 ---
+
+## Upstream Merge to v1.20.2 (2026-07-23)
+
+Merged upstream `main` (tag `v1.20.2`, commit `229d0b2`) into a new `v1.20.2-patched` branch (off `v1.20.1-patched` tip `72a7835`) via `git merge --no-ff`. 6 upstream commits picked up: one `ad758b9 "Fixes"` + five `"Linting"` commits (`4915018`, `ea75dc5`, `aa44b3b`, `bbd7791`, `229d0b2`). `min_core_api` unchanged (`0.20.0`) — no firmware floor raised. All 45 fork patches preserved.
+
+**Decision context:** upstream v1.20.2 is a maintenance release (dependency refresh + a ruff/pyright tooling migration + one real fix + a browse-thumbnail tweak). Adopted as a **full merge** (not cherry-pick) to keep our files upstream-shaped for the ongoing outbound-PR track (`PHASE0-UPSTREAM-PR-TRIAGE.md`) — our patches must pass upstream's new ruff CI. Preceded by a 5-agent adopt analysis and followed by a 3-agent adversarial merge verification (both archived in session scratch).
+
+### Dependency bumps (`requirements.txt` — adopted verbatim)
+- `ucapi ~=0.6.0 → ~=0.7.0` — proactive pin refresh; upstream code uses no 0.7-only API, **no breaking changes** (all breaking changes were in 0.6.0, already behind us — see the 0.5.3→0.6.0 audit above). 0.7.0's one real feature (entity-type filtering of `get_available_entities`) is internal to `IntegrationAPI` and backward-compatible (falls back to unfiltered when the remote reports no supported types). **NOTE:** 0.7.0 internally rewrote WS message processing (asyncio consumer/producer/router queues) → on-device ws-capture required (patches 36-43 artwork timing / patch 41 subscribe).
+- `aiohttp ~=3.13.5 → ~=3.14.1` — no API our patches use changed; 3.14 deprecates `BasicAuth` but removal is 4.0 (outside the pin). 3.14.1/.2 point releases *harden* patch-40's long-lived pooled session. Bumped together with jsonrpc-websocket.
+- `zeroconf ~=0.148.0 → ~=0.150.0` — security hardening (LAN-driven OOM bounds) + additive `async_update_interfaces`; our `discover.py` sync path unaffected (NSEC-skip only touches `update_service`, our no-op).
+- `jsonrpc-websocket >=3.2.0 → >=3.2.1` — switches to `asyncio.get_running_loop()`; the fix that keeps it working under aiohttp 3.14's loop-access deprecation. (We were likely already resolving 3.2.1 via the `>=3.2.0` floor.)
+
+### Adopted upstream fix — Kodi credential URL-encoding (`ad758b9`, `pykodi/kodi.py`)
+`image_auth_string = f"{username}:{password}@"` → `f"{quote(str(username), safe='')}:{quote(str(password), safe='')}@"`. **Real correctness fix:** a Kodi password containing `@ : / #` etc. previously produced a malformed `http://user:pass@host/image` authority → every artwork BasicAuth fetch 401'd → exhausted patch-37 retry budget + patch-42 deferred retry → art never loaded. `quote(safe="")` is byte-identical for alnum creds (zero regression) and only fixes the special-char case. `quote` already imported; kept upstream's `# pylint: disable=W1405` comment. Directly hardens the patch 28-44 artwork pipeline. (This is upstream's own fix, now part of the base — not a fork patch number.)
+
+### `media_browser.py` — 3-way merge (upstream `ad758b9` × patches 25 + 30)
+Upstream's browse change was three parts; resolved as:
+- **(a) `KODI_WINDOWS_MAPPING`** dict replacing the favorites `match window` block — **adopted** (cosmetic; the favorites body auto-merged to `KODI_WINDOWS_MAPPING.get(window, ...)`, so the dict definition is required — kept alongside our patch-25/30 helper block).
+- **(b) Kodi-reported `file['thumbnail']` preference** in `get_item_from_file` — **re-implemented on top of patch 30** as a 3-tier priority: `thumbnail_url` (patch-30 sidecar) → Kodi `file['thumbnail']` via `get_artwork_url()` → derive-from-file via `get_thumbnail_from_file()`. Patch-30's `thumbnail_url` param + directory-branch `thumbnail=thumbnail_url` preserved (upstream's directory branch has no thumbnail).
+- **Video enhancement (fork-original, extends patch 30):** added `"thumbnail"` to the sources-block `Files.GetDirectory` `properties` and gave both sidecar call sites a `sidecar → Kodi-thumbnail → None` fallback (`extract_thumbnail=False` kept, so **no ffmpeg frame-extraction** — the heavy path patch 30 deliberately avoids). **AP-K4 caveat:** Kodi only populates `file['thumbnail']` for videos when `media=video` triggers its thumb extraction (i.e. when `video_only_browse_filter` is ON, patch 25); with it OFF the sources block uses default `media=files` → `file['thumbnail']` empty → sidecar-only (pre-merge behavior). Strictly additive, no regression. **Needs cross-source on-device test (library / real PVR / plugin).**
+- **(c) smb-block `media='files'` + `thumbnail` property** — **taken as upstream's** (auto-merged; runtime no-op since `media=files` is Kodi's default and `extract_thumbnail` resolves False there). Harmless.
+
+### Conflict resolutions (5 files)
+- **`driver.json`** — kept fork version → `1.20.2-madalone.1`, release_date `2026-07-23`, `min_core_api` `0.20.0`.
+- **`discover.py`** — **kept patches 11/16** narrow-except (`except (KeyError, AttributeError, UnicodeDecodeError)`) + debug log; adopted upstream's None-safe `.get()` idiom for the body (hybrid). Did NOT take upstream's broad `except Exception: pass`.
+- **`kodi_device.py`** — kept patch-10 `retry(*, timeout=5)` signature (NO `bufferize`); took upstream's cosmetic line-wrap + `thumbnail is not None` narrowing in the movie-@smb poster branch.
+- **`remote.py`** — took upstream's `command = str(command)` in the sequence loop (our patch-8 await already converged with upstream).
+- **`media_browser.py`** — the 3-way merge above.
+
+### Tooling migration — ruff + pyright (adopted from upstream)
+Replaced `pylint`/`flake8`/`flake8-docstrings`/`black`/`isort`/`rich` with `ruff==0.15.21` + `pyright==1.1.411` + `pytest==9.1.1` + `pytest-asyncio==1.4.0` (`test-requirements.txt`), upstream's ruff/pyright `pyproject.toml`, and upstream's `python-code-format.yml` (ruff check + ruff format --check + pyright). Our `build.yml` untouched (upstream didn't change it).
+- Our black@120 output was already ruff-shaped: `ruff format` touched only `kodi_device.py` (2 trivial hunks — `retry()` signature wrap + f-string spacing).
+- `ruff check src/` net-new violations from our patches, all **suppressed inline** (keeping `pyproject.toml` byte-identical to upstream for merge cleanliness + so the suppressions travel with the patch in an upstream PR): `# noqa: S311` on the patch-17/37 `random.uniform` jitter lines; `# noqa: PTH122` on the patch-25/30 `os.path.splitext` sidecar helpers; patch-37's ambiguous `×`/`≈` comment chars replaced with `x`/`~=` (RUF002/003).
+- **Real merge regression fixed:** upstream's linting removed `import os` from `media_browser.py` (it migrated its own code to `PurePath`), but our patch-25/30 helpers still use `os.path.splitext` → restored `import os` (was surfacing as `F821 Undefined name os`).
+- **pyright is non-blocking in CI** (`continue-on-error: true`) until the ~22 strict errors (pre-existing `reportOperatorIssue` + patch-40/44 multi-language-string `reportImplicitStringConcatenation`) are triaged in a deps-installed venv. Flip the flag off to re-gate.
+
+**Pre-push (updated):** `ruff check src/` + `ruff format --check src/` replaces the old four-tool pylint/flake8/isort/black pass. Both clean on this merge; `py_compile` clean.
+
+**Skipped from upstream:** `test_connection.py` (upstream committed personal dev scratch — hardcoded `smb://jedi/Videos/`, French comments, a mid-function `exit(0)` — restored our version); `driver.json` version (fork carries `-madalone.N`).
+
+**Corrected stale note:** the CLAUDE.md "Key Dependencies" line claiming a local ucapi wheel (`src/ucapi-*.whl`) — there is none; ucapi is pulled from PyPI.
+
+**Rollback path:** the whole merge lives on the fresh `v1.20.2-patched` branch; `v1.20.1-patched` (tip `72a7835`, tag `v1.20.1-madalone.2`) is untouched. To abandon: `git checkout v1.20.1-patched && git branch -D v1.20.2-patched`. The previous release tarball is the deploy-side rollback.
+
+**Pending on-device validation (BEFORE tagging `v1.20.2-madalone.1`):** (1) 60s `tools/diag_ws_capture.py` post-deploy focused on artwork (patches 36-43) + subscribe (patch 41) to confirm ucapi 0.7.0's WS-queue rewrite didn't shift Events.UPDATE timing; (2) Kodi WS connect + BasicAuth still authenticate (jsonrpc-websocket 3.2.1 over aiohttp 3.14); (3) special-char Kodi password → artwork loads (validates the cred fix); (4) video/picture browse thumbnails with `video_only_browse_filter` ON and OFF (validates the media_browser 3-way merge, AP-K4).
+
+---
