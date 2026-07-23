@@ -44,13 +44,18 @@ class KodiDiscover(ServiceListener):
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         """Add entry."""
         info = zc.get_service_info(type_, name, LOOKUP_TIMEOUT)
+        if info is None:
+            _LOG.debug("Ignoring service %s without service info", name)
+            return
         ip = info.parsed_addresses()[0]
         server = info.server
         name = info.name
         port = info.port
         _id = server
         try:
-            _id = info.properties[b"uuid"].decode("ascii")
+            uuid = info.properties.get(b"uuid")
+            if uuid:
+                _id = uuid.decode("ascii")
         except (KeyError, AttributeError, UnicodeDecodeError) as ex:
             _LOG.debug("No uuid property on discovered service %s: %s", name, ex)
         self._services_found.append({"server": server, "ip": ip, "port": port, "name": name, "id": _id, "info": info})

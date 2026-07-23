@@ -8,6 +8,7 @@ Browsing definitions used for Kodi integration.
 import dataclasses
 import logging
 import os
+from pathlib import PurePath
 import re
 import time
 from dataclasses import dataclass, field, fields
@@ -91,7 +92,7 @@ def _is_blocked_video_only_extension(file_dict: dict[str, Any]) -> bool:
     name = file_dict.get("file") or file_dict.get("label") or ""
     if not name:
         return False
-    return os.path.splitext(name)[1].lower() in _VIDEO_ONLY_BLOCKED_EXTENSIONS
+    return os.path.splitext(name)[1].lower() in _VIDEO_ONLY_BLOCKED_EXTENSIONS  # noqa: PTH122
 
 
 # Patch 30: sidecar thumbnail detection constants + helpers.
@@ -117,7 +118,7 @@ def find_sidecar_for_file(file_path: str, files_in_dir: list[dict[str, Any]]) ->
     if not file_path:
         return None
     all_paths = {f.get("file", "") for f in files_in_dir if f.get("filetype") == "file"}
-    base = os.path.splitext(file_path)[0]
+    base = os.path.splitext(file_path)[0]  # noqa: PTH122
     for suffix in _PER_VIDEO_SIDECAR_SUFFIXES:
         for ext in _SIDECAR_IMG_EXTENSIONS:
             candidate = f"{base}{suffix}{ext}"
@@ -142,12 +143,19 @@ def _build_sidecar_map(files: list[dict[str, Any]]) -> dict[str, str]:
         if f.get("filetype") != "file":
             continue
         path = f.get("file", "")
-        if os.path.splitext(path)[1].lower() not in _VIDEO_FILE_EXTENSIONS:
+        if os.path.splitext(path)[1].lower() not in _VIDEO_FILE_EXTENSIONS:  # noqa: PTH122
             continue
         sidecar = find_sidecar_for_file(path, files)
         if sidecar:
             result[path] = sidecar
     return result
+
+
+KODI_WINDOWS_MAPPING = {
+    "videos": "kodi://sources/videos",
+    "music": "kodi://sources/music",
+    "pictures": "kodi://sources/pictures",
+}
 
 
 def get_artwork(artworks: dict[str, str] | None) -> str | None:
@@ -341,19 +349,11 @@ class MediaBrowser:
         sub: list[BrowseMediaItem] = [self.get_back_item("kodi://")]
         for fav in favs:
             title = favorites.decode_favorite_title(fav.get("title", ""))
-            window = fav.get("window")
+            window: str = fav.get("window", "")
             path = fav.get("path") or fav.get("windowparameter") or window or ""
             if not path:
                 continue
-            media_type = MediaContentType.URL.value
-            match window:
-                case "videos":
-                    media_type = "kodi://sources/videos"
-                case "music":
-                    media_type = "kodi://sources/music"
-                case "pictures":
-                    media_type = "kodi://sources/pictures"
-
+            media_type = KODI_WINDOWS_MAPPING.get(window, MediaContentType.URL.value)
             can_play = True
             media_class = MediaClass.DIRECTORY
             rewrite = favorites.rewrite_favorite_path(path)
@@ -466,12 +466,14 @@ class MediaBrowser:
             )
             self._remember_browse_title(media_id, label)
             return item
-        # Patch 30: explicit thumbnail_url (sidecar) wins; otherwise, if extract_thumbnail
-        # is requested (used for picture-source browsing), the file itself IS the image.
+        # Patch 30 (+ upstream v1.20.2): explicit thumbnail_url (sidecar) wins. Otherwise, when
+        # extract_thumbnail is requested, prefer Kodi's own reported thumbnail, then fall back to
+        # deriving the image from the file itself (used for picture-source browsing).
         if thumbnail_url is None and extract_thumbnail:
-            thumbnail_url = file.get("file")
-            if thumbnail_url:
-                thumbnail_url = self._device.client.get_thumbnail_from_file(thumbnail_url.rstrip("/"))
+            if kodi_thumbnail := file.get("thumbnail", ""):
+                thumbnail_url = self.get_artwork_url(kodi_thumbnail)
+            elif file_path := file.get("file"):
+                thumbnail_url = self._device.client.get_thumbnail_from_file(file_path.rstrip("/"))
         item = BrowseMediaItem(
             title=label,
             media_id=media_id,
@@ -1077,7 +1079,12 @@ class MediaBrowser:
                         if _video_only and _is_blocked_video_only_extension(file):
                             continue
                         _sidecar = _sidecar_map.get(file.get("file", ""))
-                        _thumb_url = self._device.client.get_thumbnail_from_file(_sidecar) if _sidecar else None
+                        if _sidecar:
+                            _thumb_url = self._device.client.get_thumbnail_from_file(_sidecar)
+                        elif file.get("thumbnail"):
+                            _thumb_url = self.get_artwork_url(file["thumbnail"])
+                        else:
+                            _thumb_url = None
                         sub = self.get_item_from_file(
                             file, media_type, extract_thumbnail=False, thumbnail_url=_thumb_url
                         )
@@ -1141,7 +1148,7 @@ class MediaBrowser:
                         item.items.append(self.get_back_item(entry.parent_id))
                     for media in data.get("files", []):
                         # Strip off extension file
-                        media["label"] = os.path.splitext(media.get("label") or "")[0]
+                        media["label"] = PurePath(media.get("label") or "").stem
                         media["filetype"] = "file"
                         sub = self.get_item_from_file(media, media_id, extract_thumbnail=False, thumbnail_url=None)
                         if sub is not None:
@@ -1250,9 +1257,15 @@ class MediaBrowser:
                     item.title = media_id
                     limit = pagination_options.limit
                     end = pagination_options.page * limit
+                    # Limitation of Kodi JSON RPC : media=files won't extract thumbnails, whereas other
+                    # values will extract files in sub-folders which is not what we want
+                    # kodi_type = SOURCE_MEDIA_TYPES_MAPPING.get(media_type, "files")
+                    kodi_type = "files"
+
                     arguments: dict[str, Any] = {
                         "directory": media_id,
-                        "properties": ["mimetype"],
+                        "properties": ["mimetype", "thumbnail"],
+                        "media": kodi_type,
                         "limits": {
                             "start": (pagination_options.page - 1) * limit,
                             "end": end,
@@ -1269,7 +1282,7 @@ class MediaBrowser:
                     data = await self._device.server.Files.GetDirectory(**arguments)
                     if data:
                         for file in data.get("files", []):
-                            sub = self.get_item_from_file(file, media_type, False)
+                            sub = self.get_item_from_file(file, media_type, kodi_type != "files")
                             if sub is not None:
                                 item.items.append(sub)
                         pagination_options.count = data.get("limits", {}).get("total", 0)
@@ -1302,7 +1315,9 @@ class MediaBrowser:
                         limit -= back_buttons
                     arguments: dict[str, Any] = {
                         "directory": media_id,
-                        "properties": ["mimetype"],
+                        # Patch 30 + v1.20.2: request "thumbnail" so videos without a sidecar can
+                        # fall back to Kodi's own reported thumbnail (populated when media=video).
+                        "properties": ["mimetype", "thumbnail"],
                         "limits": {
                             "start": (pagination_options.page - 1) * limit,
                             "end": end,
@@ -1344,7 +1359,12 @@ class MediaBrowser:
                                 sub = self.get_item_from_file(file, media_type, extract_thumbnail=True)
                             else:
                                 _sidecar = _sidecar_map.get(file.get("file", ""))
-                                _thumb_url = self._device.client.get_thumbnail_from_file(_sidecar) if _sidecar else None
+                                if _sidecar:
+                                    _thumb_url = self._device.client.get_thumbnail_from_file(_sidecar)
+                                elif file.get("thumbnail"):
+                                    _thumb_url = self.get_artwork_url(file["thumbnail"])
+                                else:
+                                    _thumb_url = None
                                 sub = self.get_item_from_file(
                                     file, media_type, extract_thumbnail=False, thumbnail_url=_thumb_url
                                 )
@@ -2199,11 +2219,11 @@ class MediaBrowser:
     ) -> tuple[list[BrowseMediaItem], PaginationOptions] | None:
         """Search media from given query and optional parameters."""
         # pylint: disable=R0915
+        if paging is None:
+            pagination_options = PaginationOptions(page=1, limit=10, count=0)
+        else:
+            pagination_options = PaginationOptions(page=paging.page, limit=paging.limit, count=0)
         try:
-            if paging is None:
-                pagination_options = PaginationOptions(page=1, limit=10, count=0)
-            else:
-                pagination_options = PaginationOptions(page=paging.page, limit=paging.limit, count=0)
             max_results = pagination_options.limit
             pagination_options.count = 0
             media_classes: list[str] = []
@@ -2230,7 +2250,7 @@ class MediaBrowser:
                 movies, local_paging = await self.search_movies(
                     query, media_id, media_type, pagination_options, max_results
                 )
-                pagination_options.count += local_paging.count
+                pagination_options.count += local_paging.count or 0
                 max_results -= len(movies)
                 results.extend(movies)
             if max_results > 0 and MediaContentType.TV_SHOW.value in search_filters:
@@ -2239,21 +2259,21 @@ class MediaBrowser:
                 tv_shows, local_paging = await self.search_tv_shows(
                     query, media_id, media_type, pagination_options, max_results
                 )
-                pagination_options.count += local_paging.count
+                pagination_options.count += local_paging.count or 0
                 max_results -= len(tv_shows)
                 results.extend(tv_shows)
             if max_results > 0 and MediaContentType.ALBUM.value in search_filters:
                 albums, local_paging = await self.search_albums(
                     query, media_id, media_type, pagination_options, max_results
                 )
-                pagination_options.count += local_paging.count
+                pagination_options.count += local_paging.count or 0
                 max_results -= len(albums)
                 results.extend(albums)
             if max_results > 0 and MediaContentType.ARTIST.value in search_filters:
                 artists, local_paging = await self.search_artists(
                     query, media_id, media_type, pagination_options, max_results
                 )
-                pagination_options.count += local_paging.count
+                pagination_options.count += local_paging.count or 0
                 max_results -= len(artists)
                 results.extend(artists)
             if max_results > 0 and (
@@ -2267,7 +2287,7 @@ class MediaBrowser:
                     media_search_filter,
                     max_results,
                 )
-                pagination_options.count += local_paging.count
+                pagination_options.count += local_paging.count or 0
                 max_results -= len(songs)
                 results.extend(songs)
 
@@ -2303,7 +2323,7 @@ class KodiMediaEntry:
     media_class: MediaClass | None = field(default=None)
     parent_id: str | None = field(default=None)
     command: str | None = field(default=None)
-    arguments: dict[str, Any] = field(default=None)
+    arguments: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         """Apply default values on missing fields."""

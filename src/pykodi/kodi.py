@@ -43,7 +43,8 @@ class KodiConnection:
 
         if username is not None:
             self._kwargs["auth"] = aiohttp.BasicAuth(username, password)
-            image_auth_string = f"{username}:{password}@"
+            # pylint: disable=W1405
+            image_auth_string = f"{quote(str(username), safe='')}:{quote(str(password), safe='')}@"
         else:
             image_auth_string = ""
 
@@ -105,7 +106,7 @@ class KodiHTTPConnection(KodiConnection):
 
         http_url = f"{http_protocol}://{host}:{port}/jsonrpc"
 
-        self._http_server: jsonrpc_async.Server = jsonrpc_async.Server(http_url, **self._kwargs)
+        self._http_server: jsonrpc_async.Server | None = jsonrpc_async.Server(http_url, **self._kwargs)
 
     @property
     def connected(self) -> bool:
@@ -120,6 +121,8 @@ class KodiHTTPConnection(KodiConnection):
     @property
     def server(self) -> jsonrpc_async.Server:
         """Active server for json-rpc requests."""
+        if self._http_server is None:
+            raise RuntimeError("HTTP server is not connected")
         return self._http_server
 
 

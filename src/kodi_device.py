@@ -13,15 +13,13 @@ import random
 import time
 import urllib.parse
 from asyncio import AbstractEventLoop, Future, Lock, Task, shield
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from functools import wraps
 from typing import (
     Any,
-    Awaitable,
-    Callable,
     Concatenate,
-    Coroutine,
     Literal,
     ParamSpec,
     TypeVar,
@@ -78,7 +76,7 @@ DEFAULT_TIMEOUT = 8.0
 ARTWORK_TIMEOUT = 12.0
 # Patch 40: artwork-fetch retry budget. 3 attempts with delays 0/0.5/1.5s + jitter, so
 # under pathological conditions the worst-case _update_lock hold is roughly
-# 3 × ARTWORK_TIMEOUT + sum(delays) ≈ 38s. UPDATE_LOCK_TIMEOUT raised from 10s → 30s
+# 3 x ARTWORK_TIMEOUT + sum(delays) ~= 38s. UPDATE_LOCK_TIMEOUT raised from 10s -> 30s
 # to match: a single watchdog tick should not abandon the lock while a legitimate
 # (just-slow) Kodi instance is still serving the artwork fetch.
 ARTWORK_FETCH_RETRY_DELAYS = (0.0, 0.5, 1.5)
@@ -130,11 +128,11 @@ class ArtworkType(IntEnum):
     ICON = 9
 
 
-def _get_language_name(lang: str, app_language="en_US") -> str:
+def _get_language_name(lang: str, app_language: str | None = "en_US") -> str:
     """Retrieve language name from language code."""
     if lang == "":
         return lang
-    app_language_code = LANGUAGES_KEYS.get(app_language, None)
+    app_language_code = LANGUAGES_KEYS.get(app_language or "en_US", None)
     if app_language_code is None:
         app_language_code = "en"
     stream_language = LANGUAGES.get(lang, None)
@@ -262,7 +260,9 @@ async def retry_call_command(
     return ucapi.StatusCodes.OK
 
 
-def retry(*, timeout: float = 5) -> Callable[
+def retry(
+    *, timeout: float = 5
+) -> Callable[
     [Callable[Concatenate[_KodiDeviceT, _P], Awaitable[_R]]],
     Callable[Concatenate[_KodiDeviceT, _P], Awaitable[_R]],
 ]:
@@ -735,7 +735,7 @@ class KodiDevice(IKodiDevice):
         while True:
             # Jitter the reconnect cadence by +/-25% so fleet restarts don't synchronize
             # thundering-herd traffic against a single Kodi instance.
-            jitter = random.uniform(0.75, 1.25)
+            jitter = random.uniform(0.75, 1.25)  # noqa: S311
             if (
                 self._kodi_connection is not None
                 and not self._kodi_connection.connected
@@ -1000,7 +1000,7 @@ class KodiDevice(IKodiDevice):
         Retry budget: 3 attempts at delays 0.0 / 0.5 / 1.5 seconds (with up to ±20%
         jitter on the non-zero delays), each attempt subject to the per-device timeout
         (KodiConfigDevice.artwork_timeout_seconds, applied via aiohttp.ClientTimeout).
-        Worst-case lock hold: ~3 × timeout + 2 s backoff ≈ 38 s with the default 12 s
+        Worst-case lock hold: ~3 x timeout + 2 s backoff ~= 38 s with the default 12 s
         timeout. UPDATE_LOCK_TIMEOUT (30 s) is sized to accommodate this without
         abandoning legitimate just-slow Kodi instances.
 
@@ -1022,7 +1022,7 @@ class KodiDevice(IKodiDevice):
             if delay:
                 # Up to 20% jitter so concurrent retries against the same Kodi instance
                 # don't synchronise. Doesn't change worst-case budget meaningfully.
-                await asyncio.sleep(delay + random.uniform(0, 0.2 * delay))
+                await asyncio.sleep(delay + random.uniform(0, 0.2 * delay))  # noqa: S311
             try:
                 async with self._artwork_session.get(url, timeout=self._artwork_timeout) as resp:
                     # Patch 29b's 200-status check, retained: Kodi returns 404 + HTML body
@@ -1348,7 +1348,7 @@ class KodiDevice(IKodiDevice):
                     # retains the prior value, genuine no-art clears it explicitly.
                     # Not working with smb links.
                     # TODO extend this approach for other media types
-                    if self._item["type"] == "movie" and thumbnail and "@smb" in thumbnail:
+                    if self._item["type"] == "movie" and thumbnail is not None and "@smb" in thumbnail:
                         try:
                             result = await self._kodi.call_method(
                                 "VideoLibrary.GetAvailableArt",
@@ -1531,7 +1531,7 @@ class KodiDevice(IKodiDevice):
                     }
 
                 if self.state == MediaStates.PAUSED and current_chapter:
-                    await self.display_temporary_title(current_chapter)
+                    await self.display_temporary_title(current_chapter or "")
                     updated_data[MediaAttr.MEDIA_TITLE] = self._temporary_title
                     if self._chapter_update_task:
                         try:
@@ -1543,7 +1543,7 @@ class KodiDevice(IKodiDevice):
                 if self._current_chapter != current_chapter:
                     self._current_chapter = current_chapter
                     updated_data[MediaAttr.SOURCE] = current_chapter
-                    await self.display_temporary_title(current_chapter)
+                    await self.display_temporary_title(current_chapter or "")
                     updated_data[MediaAttr.MEDIA_TITLE] = self._temporary_title
                     updated_data[KodiSensors.SENSOR_CHAPTER] = self.current_chapter
                     if updated_data.get(KodiSelects.SELECT_CHAPTER, None) is None:
@@ -1891,7 +1891,7 @@ class KodiDevice(IKodiDevice):
         if codec:
             stream_info = codec.title()
             if bitrate > 0:
-                stream_info = f"{stream_info} {int(bitrate/1000)}kbps"
+                stream_info = f"{stream_info} {int(bitrate / 1000)}kbps"
             if channels > 0:
                 stream_info = f"{stream_info} {channels} channels"
             if samplerate > 0:

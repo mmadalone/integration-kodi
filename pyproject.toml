@@ -1,51 +1,178 @@
-# TODO this is work in progress
-[build-system]
-requires = ["setuptools>=61.2"]
-build-backend = "setuptools.build_meta"
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = ["build", "dist"]
 
-[project]
-name = "intg-kodi"
-version = "0.2.4"
-authors = [
-    { name = "Albator", email = "albaintor@github.com" }
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle
+    "F",      # pyflakes
+    "B",      # bugbear
+    "I",      # isort
+    "PL",     # pylint
+    "UP",     # pyupgrade
+    "SIM",    # simplify
+    "ASYNC",  # async rules
+    "S",      # security
+    "C4",     # comprehensions
+    "RUF",    # ruff-specific
+    "TRY",    # tryceratops
+    "PERF",   # perflint
+    "DTZ",    # datetimez
+    "PTH",    # pathlib
+    "RET",    # return rules
+    "G",      # logging-format
+    "LOG",    # logging
+    "PIE",    # flake8-pie
+    "A",      # builtins
+    "ARG",    # unused arguments
+    "BLE",    # blind except
+    "ISC",    # implicit string concat
+    "FLY",    # flynt
+    "FURB",   # refurb
+    "RSE",    # raise rules
+    "T20",    # print
+    "INP",    # namespace packages
+    "TCH",    # type-checking
+    "EM",     # errmsg
+    "SLF",    # self-access
+    "TID",    # tidy imports
+    "FBT",    # boolean trap
 ]
-license = { text = "MPL-2.0" }
-description = "Remote Two integration for Sony AVRs"
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
-    "Operating System :: OS Independent",
-    "Topic :: Home Automation",
-    "Programming Language :: Python :: 3.11",
+
+ignore = [
+    "ARG002",  # callback signatures require unused websocket arguments
+    "BLE001",  # broad exception handling is intentional around driver/integration boundaries
+    "EM101",  # exception-message style is too noisy for this project
+    "EM102",  # exception-message style is too noisy for this project
+    "FBT001",  # external APIs use positional booleans
+    "FBT002",  # external APIs use positional booleans
+    "FBT003",  # external APIs use positional booleans
+    "ASYNC109",  # retry helper uses timeout as a domain parameter, not asyncio.timeout misuse
+    "FURB110",  # refactor-only
+    "FURB132",  # refactor-only
+    "I001",  # keep import sorting non-blocking for now
+    "INP001",  # src/pykodi intentionally has no package __init__
+    "ISC001",  # conflicts with ruff format
+    "ISC003",  # conflicts with pyright reportImplicitStringConcatenation
+    "PERF401",  # refactor-only
+    "PIE804",  # constructor kwargs readability is acceptable here
+    "PIE808",  # refactor-only
+    "PLR0911", # too-many-return-statements
+    "PLR0912", # too-many-branches
+    "PLR0913", # too-many-arguments: integration constructors mirror external config fields
+    "PLR0915", # too-many-statements in integration flow handlers
+    "PLR1714", # refactor-only
+    "PLR2004", # magic-value-comparison (noisy)
+    "PLR5501", # refactor-only
+    "PLW2901", # loop variable reassignment is harmless in command normalization
+    "PLW0603", # global-statement
+    "PTH107",  # pathlib migration is not part of this check
+    "PTH110",  # pathlib migration is not part of this check
+    "PTH118",  # pathlib migration is not part of this check
+    "PTH123",  # pathlib migration is not part of this check
+    "RET504",  # refactor-only
+    "RSE102",  # raise style only
+    "RUF006",  # fire-and-forget tasks are intentional in event callbacks
+    "RUF012",  # mutable class attributes are used as integration constants
+    "RUF100",  # stale noqa cleanup is non-blocking
+    "S110",  # silent cleanup exceptions are intentional
+    "S307",  # custom command eval is an existing advanced-user feature
+    "SIM102",  # refactor-only
+    "SIM103",  # refactor-only
+    "SIM105",  # refactor-only
+    "SIM108",  # refactor-only
+    "SIM110",  # refactor-only
+    "SIM113",  # refactor-only
+    "SIM114",  # refactor-only
+    "SIM117",  # refactor-only
+    "SIM118",  # refactor-only
+    "SIM910",  # explicit None defaults are intentional
+    "SLF001",  # integration code deliberately touches ucapi/jsonrpc internals
+    "TC001",  # import-at-runtime is acceptable for this driver
+    "TRY300",  # try-consider-else
+    "TRY003",  # exception-message style is too noisy for this project
+    "UP015",  # refactor-only
+    "UP017",  # timezone refactor is not part of this check
+    "UP042",  # StrEnum migration is not part of this check
+    "UP041",  # py311 compatibility with asyncio aliases is acceptable
 ]
-requires-python = ">=3.11"
-dependencies = [
-    "pyee>=12.0.0",
-    "ucapi==0.3.1",
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101",    # assert is the pytest idiom
+    "PLC0415", # local imports are intentional in tests (e.g. purity checks)
+    "INP001",  # tests are not a package
 ]
 
-[project.readme]
-file = "README.md"
-content-type = "text/markdown; charset=UTF-8"
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+combine-as-imports = true
+split-on-trailing-comma = false
+known-first-party = []
 
-[project.optional-dependencies]
-testing = [
-    "pylint",
-    "flake8-docstrings",
-    "flake8",
-    "black",
-    "isort",
-]
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"pytz".msg = "use datetime.timezone instead"
 
-[tool.setuptools]
-platforms = ["any"]
-license-files = ["LICENSE"]
-include-package-data = false
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
 
-[tool.setuptools.packages.find]
-exclude = ["tests"]
-namespaces = false
+[tool.ruff.lint.mccabe]
+max-complexity = 25
 
-[tool.isort]
-profile = "black"
+[tool.ruff.format]
+line-ending = "auto"
+quote-style = "double"
+
+[tool.pyright]
+include = ["src"]
+exclude = ["**/__pycache__", "build", "dist"]
+extraPaths = ["src"]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+useLibraryCodeForTypes = true
+# Untyped 3rd-party deps (ucapi) trigger Unknown cascades.
+reportMissingImports = false
+reportUntypedBaseClass = false
+reportUnknownVariableType = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportArgumentType = false
+reportAssignmentType = false
+reportCallIssue = false
+reportUnknownParameterType = false
+reportUnknownLambdaType = "error"
+reportMissingParameterType = false
+reportUnusedVariable = false
+reportUnusedImport = false
+reportUntypedFunctionDecorator = false
+reportAttributeAccessIssue = false
+reportDeprecated = false
+reportMissingTypeArgument = false
+reportRedeclaration = false
+reportGeneralTypeIssues = false
+reportIncompatibleMethodOverride = false
+reportReturnType = false
+reportOptionalMemberAccess = false
+reportOptionalSubscript = false
+reportOptionalOperand = false
+reportOptionalIterable = false
+# Module-level state vars use UPPER_CASE by convention. Mutable globals not constants.
+reportConstantRedefinition = false
+reportPrivateImportUsage = false
+reportPrivateUsage = false
+reportImplicitOverride = false
+reportUnnecessaryComparison = false
+reportUnnecessaryContains = false
+reportUnnecessaryTypeIgnoreComment = "error"
+reportImplicitStringConcatenation = "error"
+deprecateTypingAliases = true
+reportUninitializedInstanceVariable = false
+reportPropertyTypeMismatch = "error"
+reportCallInDefaultInitializer = "warning"
