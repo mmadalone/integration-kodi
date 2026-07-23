@@ -1500,6 +1500,14 @@ Fresh installs and users who skipped madalone.7 get `"icon"` automatically.
 
 ---
 
+## Patch 44c: `artwork_type_channels` setup-flow wiring fix (`v1.20.2-madalone.1`, 2026-07-23)
+
+**Problem (surfaced by the v1.20.2 merge verification):** Patch 44 added `artwork_type_channels` to `config.py` (dataclass field) and `setup_fields.py` (the "Artwork type to display for PVR/Channels" dropdown) but **never wired it into `setup_flow.py`** — it was absent from all 5 config touch-points (initial-setup parse, `KodiConfigDevice` construction, reconfigure parse, reconfigure assign, reconfigure pre-populate). Effect: the setup wizard showed the dropdown but the chosen value was **never read or persisted** — `artwork_type_channels` stayed at the dataclass default (`"icon"`) no matter what the user picked. This also silently broke patch 44b's documented madalone.7→.8 migration **option 1** ("reconfigure and save") — saving never wrote the field, so only the hand-edit (option 2) actually changed it. Confirmed pre-existing (absent in the pre-merge tip `72a7835`) — **not** a v1.20.2 merge regression; the merge faithfully preserved the gap, and the 3-agent merge verification flagged it.
+
+**Fix:** wired `artwork_type_channels` through all 5 `setup_flow.py` touch-points, mirroring the sibling `artwork_type_tvshows` exactly, plus the `KODI_DEFAULT_CHANNELS_ARTWORK` import (default `"icon"`, already defined in `setup_fields.py`). The dropdown now persists; "Channel logo" (`"icon"`) remains the default (patch 44b). No breaking changes — the field, its default, and the dropdown options are unchanged; only the previously-missing read/write path is completed. `ruff check` / `ruff format --check` / `py_compile` clean.
+
+---
+
 ## Post-mortem: Patch 41 root cause (UC-Remote-UI v1.4.10, 2026-04-27)
 
 The user-visible symptom that motivated patch 41 — "blank artwork on first activity-card open after integration reinstall, fixed by close+reopen" — turned out to be three layered bugs on the firmware side, all on UC-Remote-UI commit `1266974` and earlier (i.e. all pre-v1.4.10). Triangulation chain:

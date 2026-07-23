@@ -34,7 +34,7 @@ from pykodi.kodi import (
     KodiHTTPConnection,
     KodiWSConnection,
 )
-from setup_fields import KODI_DEFAULT_ARTWORK, KODI_DEFAULT_TVSHOW_ARTWORK, SETUP_FIELDS
+from setup_fields import KODI_DEFAULT_ARTWORK, KODI_DEFAULT_CHANNELS_ARTWORK, KODI_DEFAULT_TVSHOW_ARTWORK, SETUP_FIELDS
 
 _LOG = logging.getLogger(__name__)
 
@@ -399,6 +399,9 @@ class SetupFlow:
                         user_input.settings, "artwork_type_tvshows", self._reconfigured_device.artwork_type_tvshows
                     )
                     set_setup_field(
+                        user_input.settings, "artwork_type_channels", self._reconfigured_device.artwork_type_channels
+                    )
+                    set_setup_field(
                         user_input.settings, "browse_media_root", self._reconfigured_device.browse_media_root
                     )
                     set_setup_field(
@@ -632,6 +635,7 @@ class SetupFlow:
         browsing_files_sort = msg.input_values.get("browsing_files_sort", "")
         artwork_type = msg.input_values.get("artwork_type", KODI_DEFAULT_ARTWORK)
         artwork_type_tvshows = msg.input_values.get("artwork_type_tvshows", KODI_DEFAULT_TVSHOW_ARTWORK)
+        artwork_type_channels = msg.input_values.get("artwork_type_channels", KODI_DEFAULT_CHANNELS_ARTWORK)
         media_update_task = msg.input_values.get("media_update_task", "false") == "true"
         download_artwork = msg.input_values.get("download_artwork", "false") == "true"
         try:
@@ -740,6 +744,7 @@ class SetupFlow:
                 ssl=ssl,
                 artwork_type=artwork_type,
                 artwork_type_tvshows=artwork_type_tvshows,
+                artwork_type_channels=artwork_type_channels,
                 media_update_task=media_update_task,
                 download_artwork=download_artwork,
                 artwork_timeout_seconds=artwork_timeout_seconds,
@@ -789,6 +794,7 @@ class SetupFlow:
         ssl = msg.input_values.get("ssl", "false") == "true"
         artwork_type = msg.input_values.get("artwork_type", KODI_DEFAULT_ARTWORK)
         artwork_type_tvshows = msg.input_values.get("artwork_type_tvshows", KODI_DEFAULT_TVSHOW_ARTWORK)
+        artwork_type_channels = msg.input_values.get("artwork_type_channels", KODI_DEFAULT_CHANNELS_ARTWORK)
         browsing_video_sort = msg.input_values.get("browsing_video_sort", "")
         browsing_album_sort = msg.input_values.get("browsing_album_sort", "")
         browsing_files_sort = msg.input_values.get("browsing_files_sort", "")
@@ -837,6 +843,7 @@ class SetupFlow:
         self._reconfigured_device.ssl = ssl
         self._reconfigured_device.artwork_type = artwork_type
         self._reconfigured_device.artwork_type_tvshows = artwork_type_tvshows
+        self._reconfigured_device.artwork_type_channels = artwork_type_channels
         self._reconfigured_device.media_update_task = media_update_task
         self._reconfigured_device.download_artwork = download_artwork
         self._reconfigured_device.artwork_timeout_seconds = artwork_timeout_seconds
