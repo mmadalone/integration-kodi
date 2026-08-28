@@ -6,7 +6,7 @@ All upstream features (including the v1.20.0 PVR/Addons browsing + Favourites su
 
 Requires remote firmware `>= 1.7.10`.
 
-**Current build:** `v1.21.0-madalone.1` (2026-08-28, on-device validation pending; last validated release `v1.20.2-madalone.1`, 2026-07-24). See [`CHANGELOG.md`](CHANGELOG.md) for release history and [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md) for per-patch implementation notes.
+**Current build:** `v1.21.0-madalone.1` (2026-08-28) — [GitHub Releases](https://github.com/mmadalone/integration-kodi/releases). Install the `uc-intg-kodi-*-aarch64.tar.gz` asset via the remote's web configurator (Integrations → + → Upload); after that first manual install, [uc-intg-manager](https://github.com/JackJPowell/uc-intg-manager) tracks this repository for updates (point releases `-madalone.N` must be picked via its *Specify version* box, e.g. `v1.21.0-madalone.2`). See [`CHANGELOG.md`](CHANGELOG.md) for release history and [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md) for per-patch implementation notes.
 
 ## Patches
 

@@ -11,7 +11,7 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
-### v1.21.0-madalone.1 — 2026-08-28 *(on-device validation pending — not yet tagged)*
+### v1.21.0-madalone.1 — 2026-08-28
 
 **Merged upstream `v1.21.0` into the fork** (single upstream commit `2ecd63b`, "Added support for upcoming improved Kodi browsing (artwork extraction from sources and favorites)"). New branch `v1.21.0-patched` off `v1.20.2-madalone.1`.
 
@@ -19,6 +19,7 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 - **Fork merge (patches 25 + 30):** sidecar detection still wins; the two duplicated sidecar/thumbnail fallback pre-computes from the v1.20.2 merge were collapsed so one chain lives in `get_item_from_file` (sidecar → art → Kodi thumbnail → derive-iff-image), and that chain now also runs for folders, so containers with Kodi-supplied art (videodb:// / upnp:// / pvr://) keep it. Fork also requests `"art"` at the `kodi://sources` call: with `video_only_browse_filter` **on**, library-matched movies now show their **poster** while browsing instead of an extracted frame / nothing. Only fork-decided behaviour change; revert = remove that one property.
 - **Effect on Kodi 21 today:** `smb://`/`nfs://` picture folders (and sidecar images inside video folders) gain thumbnails; videos unchanged; no new JSON-RPC calls; playback artwork untouched. No breaking changes (no feature/attribute/config/dependency changes).
 - Skipped upstream `test_connection.py` (dev scratch). `test_driver.py` `get_locale` None guard adopted. ruff clean; pyright identical to baseline.
+- **`driver.json` `developer.url` / `home_page` now point at this fork's repository** (were the maintainer profile / upstream repo). This is what [uc-intg-manager](https://github.com/JackJPowell/uc-intg-manager) uses to find updates for an installed driver — earlier fork builds silently fell back to upstream's releases.
 - **Known gap surfaced (pre-existing):** browse-time sidecar thumbnails only work for local-path / `upnp://` / `http://` sources — the `smb://`/`nfs://` branch runs first and has no sidecar map. Candidate patch 30c.
 
 ---

@@ -1781,7 +1781,9 @@ Three conflict blocks, all inside patch 25/30 regions; the `smb://` branch hunks
 
 **Rollback path:** the merge lives on the fresh `v1.21.0-patched` branch; `v1.20.2-patched` (tip `62a61de`, tag `v1.20.2-madalone.1`) is untouched. To abandon: `git checkout v1.20.2-patched && git branch -D v1.21.0-patched`. The previous release tarball is the deploy-side rollback.
 
-**Pending on-device validation (BEFORE tagging `v1.21.0-madalone.1`):**
+**Release note (2026-08-28):** tagged `v1.21.0-madalone.1` at `73023cd` and released via CI the same evening at the maintainer's request, with the build running on the UC3 but **before** the checklist below was run item by item — it remains the validation to-do for this release. `73023cd` also pointed `driver.json` `developer.url` / `home_page` at the fork repo (uc-intg-manager reads `developer.url` to find updates; see CLAUDE.md "Release").
+
+**On-device validation checklist (still to run):**
 - **V0** Deploy per CLAUDE.md (uninstall via web UI → upload tarball → setup against madteevee by IP); 60 s `tools/diag_ws_capture.py` post-deploy.
 - **V1** `kodi://sources/videos`: source list renders, back item present (`GetSources` loop — expected no-op, no thumbnails).
 - **V2** `smb://` Sonarr video folder: videos show **no** thumbnail (unchanged); `-thumb.jpg` / `poster.jpg` entries now show derived thumbnails; Kodi log shows no `image://video@` requests.
@@ -1793,6 +1795,6 @@ Three conflict blocks, all inside patch 25/30 regions; the `smb://` branch hunks
 - **V8** A favourite whose window maps to `kodi://sources/*` (videos/music/pictures — `KODI_WINDOWS_MAPPING`) renders with folder art where Kodi supplies it. Note: a `pvr://recordings` / `tvrecordings`-window favourite keeps its raw URL media_type and hits the pre-existing unsupported-type warning — not reachable by this code path; unchanged from madalone.1.
 - **V9** Playback artwork regression: library movie, real PVR channel, PseudoTV channel, Sonarr file (play-time sidecar 30b) → identical to `v1.20.2-madalone.1`; no flicker over 5 min.
 - **V10** Integration logs (`http://192.168.2.204:8088/api/integration-logs/entries?service=core`, filter `kodi_driver`): no new WARNING/ERROR from `media_browser`; reconfigure flow opens and saves with the existing config.
-- **V11** Only then: `git tag -a v1.21.0-madalone.1` + push branch and tag.
+- **V11** ~~Only then: `git tag -a v1.21.0-madalone.1` + push branch and tag.~~ Done 2026-08-28 (ahead of V0-V10, see release note).
 
 ---

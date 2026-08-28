@@ -9,7 +9,7 @@ Patched fork of [albaintor/integration-kodi](https://github.com/albaintor/integr
 **Owner:** madalone
 **Device:** UC Remote 3 at `192.168.2.204`, PIN `6984`
 **Upstream:** `albaintor/integration-kodi` tag `v1.21.0` (commit `2ecd63b`, merged 2026-08-28; prior base `v1.20.2`/`229d0b2`)
-**Current branch:** `v1.21.0-patched` (working toward tag `v1.21.0-madalone.1` — HELD until on-device validation, checklist V0-V11 in `KODI-INTEGRATION-PATCHES.md` "Upstream Merge to v1.21.0"; last released tag `v1.20.2-madalone.1` at `62a61de` on `v1.20.2-patched`, 2026-07-24)
+**Current branch:** `v1.21.0-patched` — tag `v1.21.0-madalone.1` released 2026-08-28 at `73023cd` (GitHub Release built by CI; running on the UC3, but the full on-device checklist V0-V11 in `KODI-INTEGRATION-PATCHES.md` "Upstream Merge to v1.21.0" has NOT been run item by item yet). Previous release `v1.20.2-madalone.1` at `62a61de` on `v1.20.2-patched` (2026-07-24).
 **Language:** Python 3.11 (async/await, `ucapi` 0.7.0, `aiohttp` 3.14, Kodi JSON-RPC)
 **Build toolchain:** `docker.io/unfoldedcircle/r2-pyinstaller:3.11.13-0.4.0`
 
@@ -113,6 +113,16 @@ Required tar.gz structure:
 3. **Configure** -- run through setup flow (Kodi IP, port, credentials, options)
 
 Do NOT try to update via API (`/api/intg/drivers/kodi_driver/update`) -- it updates metadata only, not the binary. Always uninstall + reinstall via web UI.
+
+### Release (GitHub Release → uc-intg-manager)
+
+`.github/workflows/build.yml` builds the aarch64 binary and publishes a **GitHub Release** on every `v*` tag push (assets `uc-intg-kodi-v<VERSION>-aarch64.tar.gz` + `uc-src.hash`, `prerelease: false`, `make_latest: legacy`). It fails if `driver.json` `version` ≠ tag. So a release is: bump `driver.json`, commit, `git tag -a vX.Y.Z-madalone.N`, `git push origin <branch> <tag>`, then `gh run watch`. The local `kodi-integration-v<VERSION>.tar.gz` is only for manual web-UI installs.
+
+**[uc-intg-manager](https://github.com/JackJPowell/uc-intg-manager)** (source-read 2026-08-28, simple-memory `3823daaf124f55936d9636c73b2b94bc`) has **no "add custom repo"** feature — it updates an *installed* driver from the GitHub repo in `driver.json` → `developer.url` (registry entry only as fallback). That is why `developer.url` and `home_page` point at `https://github.com/mmadalone/integration-kodi` (since `v1.21.0-madalone.1`; before that the manager silently fell back to albaintor's repo). Consequences:
+- First install of a fork build must be a **manual upload** (web configurator); from then on the manager tracks the fork repo.
+- Its version compare reduces non-PEP440 tags to the numeric core, so **`-madalone.N` point releases are invisible to auto-detect** (`.1 → .2` is "up to date"); only a `MAJOR.MINOR.PATCH` bump shows. Install a point release via the card's *Specify version* box, typed exactly `v1.21.0-madalone.2` (with the `v`).
+- It picks the **first asset whose name contains `.tar.gz`** — keep one tarball per release. The hash file is never verified.
+- Same `driver_id` as upstream (`kodi_driver`): the catalog card is albaintor's (author label, upstream tag list); choosing an upstream tag there resolves against *our* repo and 404s. Harmless, just confusing.
 
 ### Revert to upstream
 
