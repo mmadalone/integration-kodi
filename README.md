@@ -1,12 +1,12 @@
 # Kodi Integration for Unfolded Circle Remote 3 (Patched Fork)
 
-Fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (currently rebased onto **v1.20.1**) with bug fixes for title formatting, artwork loading, playback state, and power-off control, plus additional setup-flow toggles and simple commands.
+Fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (currently rebased onto **v1.21.0**) with bug fixes for title formatting, artwork loading, playback state, and power-off control, plus additional setup-flow toggles and simple commands.
 
-All upstream features (including the v1.20.0 PVR/Addons browsing + Favourites support and the v1.20.1 livetv/favourites improvements) are inherited as-is. All credit for the integration itself goes to [Albaintor](https://github.com/albaintor). This fork applies targeted patches only — no upstream logic has been altered.
+All upstream features (including the v1.20.0 PVR/Addons browsing + Favourites support, the v1.20.1 livetv/favourites improvements, the v1.20.2 Kodi-credential URL-encoding fix and the v1.21.0 browse-artwork groundwork — the latter only lights up on Kodi 22 once xbmc/xbmc#28244 ships) are inherited as-is. All credit for the integration itself goes to [Albaintor](https://github.com/albaintor). This fork applies targeted patches only — no upstream logic has been altered.
 
 Requires remote firmware `>= 1.7.10`.
 
-**Current build:** `v1.20.1-madalone.1` (2026-05-04). See [`CHANGELOG.md`](CHANGELOG.md) for release history and [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md) for per-patch implementation notes.
+**Current build:** `v1.21.0-madalone.1` (2026-08-28, on-device validation pending; last validated release `v1.20.2-madalone.1`, 2026-07-24). See [`CHANGELOG.md`](CHANGELOG.md) for release history and [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md) for per-patch implementation notes.
 
 ## Patches
 
@@ -103,7 +103,7 @@ Six patches focused on making UC3 MediaBrowser-initiated playback behave like Ko
 - **27.** Deprecated **`suppress_volume_overlay`** — the original patch-6 feature-removal approach broke Kodi volume control entirely post UC Remote 3 FW v1.4.1 (which correctly respects feature set). Volume features are now always advertised. The toggle has no functional replacement on vanilla UC firmware — OSD hiding requires running the private `Madalones-Defolded-Circle-3` firmware fork (which adds `Config.showVolumeOverlay`, surfaced as **Settings → UI → Show volume indicator**); on stock UC firmware the volume OSD always appears on volume change. Config key retained for backcompat; one-time WARNING logged per device if flag is still set to `True`.
 - **28.** Broader artwork fallback chain — when the configured `artwork_type` returns nothing, walks `poster → thumb → landscape → banner → fanart → clearart → icon`. Recovers Netflix-style plugins that expose real thumbnails only under `art["icon"]`.
 - **29.** Kodi placeholder filter + HTTP status validation — `image://Default*.png` (Kodi's internal placeholders like `DefaultVideo.png`) are now filtered from any resolution path. When `download_artwork` is enabled, the fetch validates HTTP status 200 before base64-encoding. Content-Type is **not** checked because Kodi omits that header for thumbnails.
-- **30.** Sidecar thumbnail detection — at both browse time and play time, the integration recognizes Sonarr/Radarr `<basename>-thumb.jpg` / `-poster.jpg` / `-landscape.jpg`, Kodi-native `.tbn`, and folder-level `poster.jpg` / `folder.jpg` / `banner.jpg` / `cover.jpg`. Browse-time detection is free (reuses the existing `Files.GetDirectory` response); play-time detection adds one extra round-trip only when the primary art chain produced nothing.
+- **30.** Sidecar thumbnail detection — at both browse time and play time, the integration recognizes Sonarr/Radarr `<basename>-thumb.jpg` / `-poster.jpg` / `-landscape.jpg`, Kodi-native `.tbn`, and folder-level `poster.jpg` / `folder.jpg` / `banner.jpg` / `cover.jpg`. Browse-time detection is free (reuses the existing `Files.GetDirectory` response); play-time detection adds one extra round-trip only when the primary art chain produced nothing. Since v1.21.0 the browse-time chain is sidecar → Kodi `art` dict → Kodi thumbnail → derive-from-file (image files only).
 
 **Dropped pre-release:** `suppress_media_browser`, `suppress_shuffle`, `suppress_repeat` were drafted and then pulled after diagnosis showed integration-side feature removal doesn't propagate to already-subscribed UC3 entities. The UX for hiding those icons lives at the UC Remote 3 firmware layer instead (`Config.showMediaBrowserButton` / `showShuffleButton` / `showRepeatButton` in v1.4.2+). The three dataclass fields are retained in `KodiConfigDevice` as silent no-ops for backwards compat with pre-release `config.json` entries.
 

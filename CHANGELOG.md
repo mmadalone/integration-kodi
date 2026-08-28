@@ -11,6 +11,31 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
+### v1.21.0-madalone.1 — 2026-08-28 *(on-device validation pending — not yet tagged)*
+
+**Merged upstream `v1.21.0` into the fork** (single upstream commit `2ecd63b`, "Added support for upcoming improved Kodi browsing (artwork extraction from sources and favorites)"). New branch `v1.21.0-patched` off `v1.20.2-madalone.1`.
+
+- **Browse-time thumbnails (upstream):** `get_item_from_file` now walks Kodi's `art` dict (poster → fanart → thumb) before the reported `thumbnail`, and the derive-from-file fallback only fires for `image/*` files — a video-backed `image://` URL no longer makes Kodi decode a whole media file when the remote fetches the thumbnail. `extract_thumbnail` is on at every browse call site; `"art"` is requested for `smb://`/`nfs://` listings. The headline feature — artwork for plain files from sources/favourites — depends on **Kodi 22 + [xbmc/xbmc#28244](https://github.com/xbmc/xbmc/pull/28244) (still open)**; on Kodi 21.x it is inert (schema-valid, returns `{}`).
+- **Fork merge (patches 25 + 30):** sidecar detection still wins; the two duplicated sidecar/thumbnail fallback pre-computes from the v1.20.2 merge were collapsed so one chain lives in `get_item_from_file` (sidecar → art → Kodi thumbnail → derive-iff-image), and that chain now also runs for folders, so containers with Kodi-supplied art (videodb:// / upnp:// / pvr://) keep it. Fork also requests `"art"` at the `kodi://sources` call: with `video_only_browse_filter` **on**, library-matched movies now show their **poster** while browsing instead of an extracted frame / nothing. Only fork-decided behaviour change; revert = remove that one property.
+- **Effect on Kodi 21 today:** `smb://`/`nfs://` picture folders (and sidecar images inside video folders) gain thumbnails; videos unchanged; no new JSON-RPC calls; playback artwork untouched. No breaking changes (no feature/attribute/config/dependency changes).
+- Skipped upstream `test_connection.py` (dev scratch). `test_driver.py` `get_locale` None guard adopted. ruff clean; pyright identical to baseline.
+- **Known gap surfaced (pre-existing):** browse-time sidecar thumbnails only work for local-path / `upnp://` / `http://` sources — the `smb://`/`nfs://` branch runs first and has no sidecar map. Candidate patch 30c.
+
+---
+
+### v1.20.2-madalone.1 — 2026-07-24
+
+**Merged upstream `v1.20.2` into the fork** (maintenance release; on-device tested on UC Remote 3 before tagging).
+
+- **Kodi credential URL-encoding fix** (`pykodi/kodi.py`, upstream `ad758b9`) — Kodi passwords containing `@ : / #` no longer break every artwork fetch with a 401.
+- **Dependency refresh** — `ucapi ~=0.7.0`, `aiohttp ~=3.14`, `zeroconf ~=0.150`, `jsonrpc-websocket >=3.2.1`. `min_core_api` unchanged (`0.20.0`).
+- **Browse thumbnails** — Kodi-reported `thumbnail` used as a fallback after patch-30 sidecar detection (extends patch 30).
+- **Patch 44c** — `artwork_type_channels` dropdown was defined but never wired through `setup_flow.py` (didn't persist); now wired like `artwork_type_tvshows`. Default `"icon"` unchanged.
+- **Tooling** — migrated to ruff + pyright (matching upstream CI); pylint/flake8/isort/black removed. pyright non-blocking in CI pending strict-error triage.
+- Kept fork narrow-except handling in `discover.py` and the patch-10 `retry()` signature over upstream's linting changes; skipped upstream `test_connection.py` dev scratch.
+
+---
+
 ### v1.20.1-madalone.2 — 2026-05-05
 
 **Cleanup hotfix on top of madalone.1.** Retires three redundant keypress aliases.

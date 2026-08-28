@@ -4,12 +4,12 @@ DON'T BE SYCOPHANTIC
 
 ## Project Identity
 
-Patched fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (v1.20.1) for the **Unfolded Circle Remote 3**. Python 3.11 async integration driver using the `ucapi` library.
+Patched fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (v1.21.0) for the **Unfolded Circle Remote 3**. Python 3.11 async integration driver using the `ucapi` library.
 
 **Owner:** madalone
 **Device:** UC Remote 3 at `192.168.2.204`, PIN `6984`
-**Upstream:** `albaintor/integration-kodi` tag `v1.20.2` (commit `229d0b2`, merged 2026-07-23; prior base `v1.20.1`/`26692c4`)
-**Current branch:** `v1.20.2-patched` (working toward tag `v1.20.2-madalone.1` — HELD until on-device validation; last released tag `v1.20.1-madalone.2` on `v1.20.1-patched`)
+**Upstream:** `albaintor/integration-kodi` tag `v1.21.0` (commit `2ecd63b`, merged 2026-08-28; prior base `v1.20.2`/`229d0b2`)
+**Current branch:** `v1.21.0-patched` (working toward tag `v1.21.0-madalone.1` — HELD until on-device validation, checklist V0-V11 in `KODI-INTEGRATION-PATCHES.md` "Upstream Merge to v1.21.0"; last released tag `v1.20.2-madalone.1` at `62a61de` on `v1.20.2-patched`, 2026-07-24)
 **Language:** Python 3.11 (async/await, `ucapi` 0.7.0, `aiohttp` 3.14, Kodi JSON-RPC)
 **Build toolchain:** `docker.io/unfoldedcircle/r2-pyinstaller:3.11.13-0.4.0`
 
@@ -135,7 +135,7 @@ See `feedback_run_formatters_pre_push.md` and `STYLE_GUIDE.md` §6.2.
 
 ## Current Patches
 
-All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is the source of truth). Summary below (42 active patches as of `v1.20.1-madalone.2`; 3 retired — patches 33, 35, 45 — see Patch Discipline note below). v1.20.0 merge in "Upstream Merge to v1.20.0" section; v1.20.1 merge in "Upstream Merge to v1.20.1"; v1.20.0-madalone.2 / .3 were intermediate iterations; v1.20.1-madalone.2 retired three keypress aliases now reachable via `custom_command "key X"` syntax. **v1.20.2 merge (2026-07-23, "Upstream Merge to v1.20.2" section):** adopted the dependency refresh (`ucapi 0.7` / `aiohttp 3.14` / `zeroconf 0.150` / `jsonrpc-websocket 3.2.1`), upstream's Kodi **credential URL-encoding** fix in `pykodi/kodi.py` (fixes artwork 401s for passwords with `@`/`:`/`/`), a `media_browser` **Kodi-thumbnail fallback** extending patch 30 (sidecar → Kodi thumbnail → derive), and the **ruff/pyright tooling migration**. Table below:
+All patches documented in detail in `KODI-INTEGRATION-PATCHES.md` (that file is the source of truth). Summary below (42 active patches as of `v1.20.1-madalone.2`; 3 retired — patches 33, 35, 45 — see Patch Discipline note below). v1.20.0 merge in "Upstream Merge to v1.20.0" section; v1.20.1 merge in "Upstream Merge to v1.20.1"; v1.20.0-madalone.2 / .3 were intermediate iterations; v1.20.1-madalone.2 retired three keypress aliases now reachable via `custom_command "key X"` syntax. **v1.20.2 merge (2026-07-23, "Upstream Merge to v1.20.2" section):** adopted the dependency refresh (`ucapi 0.7` / `aiohttp 3.14` / `zeroconf 0.150` / `jsonrpc-websocket 3.2.1`), upstream's Kodi **credential URL-encoding** fix in `pykodi/kodi.py` (fixes artwork 401s for passwords with `@`/`:`/`/`), a `media_browser` **Kodi-thumbnail fallback** extending patch 30 (sidecar → Kodi thumbnail → derive), and the **ruff/pyright tooling migration**. **v1.21.0 merge (2026-08-28, "Upstream Merge to v1.21.0" section):** one upstream commit (`2ecd63b`) confined to `media_browser.py` browse-time thumbnails — new **art-dict tier** via `get_artwork()` and a **mimetype `image/*` gate** on derive-from-file, `extract_thumbnail=True` at every call site; the fork collapsed its duplicated sidecar pre-computes so `get_item_from_file` owns one chain (**sidecar > art > Kodi thumbnail > derive-iff-image**) and also requests `"art"` at the `kodi://sources` call (library movies show poster with `video_only_browse_filter` ON). The headline feature (art for plain files from sources/favourites) needs **Kodi 22 + xbmc/xbmc#28244 (still open)** — inert on Kodi 21.x. Table below:
 
 | # | Name | Summary |
 |---|------|---------|
@@ -289,6 +289,7 @@ Snapshot as of 2026-04-29 (post v1.18.13-madalone.8 release).
 
 ### Validation pending
 
+- **v1.21.0 merge on device (2026-08-28).** Merge commit `b019648` on `v1.21.0-patched` is built but NOT yet deployed/tagged. Run V0-V11 from `KODI-INTEGRATION-PATCHES.md` "Upstream Merge to v1.21.0" — V5 (poster art for library movies with `video_only_browse_filter` ON) is the only fork-decided behaviour change; V2/V6 confirm the mimetype gate. Re-check xbmc/xbmc#28244 when Kodi 22 RC lands (stacked paths, `episodes://` pseudo-dirs, long SMB paths vs `MAX_MEDIA_ID_LEN`).
 - **Patch 44b on diverse PVR sources.** Verified working on PseudoTV (`plugin.video.pseudotv.live`) and Movistar+ Kodi PVR client. Other PVR backends — TVHeadend, MythTV, IPTV Simple Client, Pluto.tv addon, etc. — have not been live-tested. They may report `_item['type']='channel'` with a different art-dict shape; if a user reports "channel logo missing on X PVR backend" the diagnostic chain is documented in `.claude-memory/project_pseudotv_logo_diagnosis.md` (Logdy WS capture → `Player.GetItem` direct probe → compare art-dict shape).
 - **madalone.7 → .8 migration**. Devices that completed setup on `.7` have `artwork_type_channels="thumbnail"` persisted in stored config. The dataclass MISSING-default loop only fills *absent* fields — won't migrate existing values. Users must reconfigure (open setup → save) OR manually delete the line from `/data/<intg-uuid>/config.json` to pick up the `.8` default. Could be auto-migrated in a future patch but flagged as low-priority since it's a 1-day-old default.
 
