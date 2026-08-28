@@ -466,14 +466,24 @@ class MediaBrowser:
             )
             self._remember_browse_title(media_id, label)
             return item
-        # Patch 30 (+ upstream v1.20.2): explicit thumbnail_url (sidecar) wins. Otherwise, when
-        # extract_thumbnail is requested, prefer Kodi's own reported thumbnail, then fall back to
-        # deriving the image from the file itself (used for picture-source browsing).
+        # Patch 30 (+ upstream v1.20.2 / v1.21.0): explicit thumbnail_url (sidecar) wins. Otherwise,
+        # when extract_thumbnail is requested, walk Kodi's art dict (poster > fanart > thumb —
+        # populated for library-matched items today, and for plain files on Kodi 22+ once
+        # xbmc/xbmc#28244 lands), then Kodi's own reported thumbnail, then derive the image from
+        # the file itself — image/* files only.
         if thumbnail_url is None and extract_thumbnail:
-            if kodi_thumbnail := file.get("thumbnail", ""):
-                thumbnail_url = self.get_artwork_url(kodi_thumbnail)
-            elif file_path := file.get("file"):
-                thumbnail_url = self._device.client.get_thumbnail_from_file(file_path.rstrip("/"))
+            if art := file.get("art", ""):
+                art = get_artwork(art)
+                if art:
+                    thumbnail_url = self.get_artwork_url(art)
+            if thumbnail_url is None:
+                if kodi_thumbnail := file.get("thumbnail", ""):
+                    thumbnail_url = self.get_artwork_url(kodi_thumbnail)
+                elif str(file.get("mimetype", "")).lower().startswith("image/"):
+                    # A video-backed image:// URL makes Kodi decode the media when the
+                    # remote fetches it, which can exhaust Kodi for large network files.
+                    if file_path := file.get("file"):
+                        thumbnail_url = self._device.client.get_thumbnail_from_file(file_path.rstrip("/"))
         item = BrowseMediaItem(
             title=label,
             media_id=media_id,
@@ -1078,15 +1088,12 @@ class MediaBrowser:
                         # Item #4c: skip companion files (.nfo/.srt/.sub/...) when video-only is on.
                         if _video_only and _is_blocked_video_only_extension(file):
                             continue
+                        # Patch 30 sidecar wins; otherwise get_item_from_file walks
+                        # art > thumbnail > derive-iff-image (upstream v1.21.0).
                         _sidecar = _sidecar_map.get(file.get("file", ""))
-                        if _sidecar:
-                            _thumb_url = self._device.client.get_thumbnail_from_file(_sidecar)
-                        elif file.get("thumbnail"):
-                            _thumb_url = self.get_artwork_url(file["thumbnail"])
-                        else:
-                            _thumb_url = None
+                        _thumb_url = self._device.client.get_thumbnail_from_file(_sidecar) if _sidecar else None
                         sub = self.get_item_from_file(
-                            file, media_type, extract_thumbnail=False, thumbnail_url=_thumb_url
+                            file, media_type, extract_thumbnail=True, thumbnail_url=_thumb_url
                         )
                         if sub is not None:
                             item.items.append(sub)
@@ -1264,7 +1271,7 @@ class MediaBrowser:
 
                     arguments: dict[str, Any] = {
                         "directory": media_id,
-                        "properties": ["mimetype", "thumbnail"],
+                        "properties": ["mimetype", "thumbnail", "art"],
                         "media": kodi_type,
                         "limits": {
                             "start": (pagination_options.page - 1) * limit,
@@ -1282,7 +1289,7 @@ class MediaBrowser:
                     data = await self._device.server.Files.GetDirectory(**arguments)
                     if data:
                         for file in data.get("files", []):
-                            sub = self.get_item_from_file(file, media_type, kodi_type != "files")
+                            sub = self.get_item_from_file(file, media_type, extract_thumbnail=True)
                             if sub is not None:
                                 item.items.append(sub)
                         pagination_options.count = data.get("limits", {}).get("total", 0)
@@ -1315,9 +1322,11 @@ class MediaBrowser:
                         limit -= back_buttons
                     arguments: dict[str, Any] = {
                         "directory": media_id,
-                        # Patch 30 + v1.20.2: request "thumbnail" so videos without a sidecar can
-                        # fall back to Kodi's own reported thumbnail (populated when media=video).
-                        "properties": ["mimetype", "thumbnail"],
+                        # Patch 30 + v1.20.2 + v1.21.0: request "thumbnail" and "art" so videos
+                        # without a sidecar can fall back to Kodi's library artwork / reported
+                        # thumbnail (populated when media=video; "art" also arrives for plain files
+                        # on Kodi 22+ once xbmc/xbmc#28244 lands).
+                        "properties": ["mimetype", "thumbnail", "art"],
                         "limits": {
                             "start": (pagination_options.page - 1) * limit,
                             "end": end,
@@ -1353,21 +1362,14 @@ class MediaBrowser:
                             # Item #4c: skip companion files (.nfo/.srt/.sub/...) when video-only is on.
                             if _video_only and _is_blocked_video_only_extension(file):
                                 continue
-                            # Pictures use upstream's internal thumbnail extraction;
-                            # videos get the pre-computed sidecar map URL (Patch 30).
-                            if media == KodiMediaTypes.PICTURES.value:
-                                sub = self.get_item_from_file(file, media_type, extract_thumbnail=True)
-                            else:
-                                _sidecar = _sidecar_map.get(file.get("file", ""))
-                                if _sidecar:
-                                    _thumb_url = self._device.client.get_thumbnail_from_file(_sidecar)
-                                elif file.get("thumbnail"):
-                                    _thumb_url = self.get_artwork_url(file["thumbnail"])
-                                else:
-                                    _thumb_url = None
-                                sub = self.get_item_from_file(
-                                    file, media_type, extract_thumbnail=False, thumbnail_url=_thumb_url
-                                )
+                            # Patch 30 sidecar wins; otherwise get_item_from_file walks
+                            # art > thumbnail > derive-iff-image (upstream v1.21.0). Picture sources
+                            # take the same path (derive fires only for image/* mimetypes).
+                            _sidecar = _sidecar_map.get(file.get("file", ""))
+                            _thumb_url = self._device.client.get_thumbnail_from_file(_sidecar) if _sidecar else None
+                            sub = self.get_item_from_file(
+                                file, media_type, extract_thumbnail=True, thumbnail_url=_thumb_url
+                            )
                             if sub is not None:
                                 item.items.append(sub)
                         pagination_options.count = data.get("limits", {}).get("total", 0)
