@@ -14,9 +14,9 @@
   "developer": {
     "name": "madalone (fork of Albaintor)",
     "email": "madalone@github.com",
-    "url": "https://github.com/mmadalone"
+    "url": "https://github.com/mmadalone/integration-kodi"
   },
-  "home_page": "https://github.com/albaintor/integration-kodi",
+  "home_page": "https://github.com/mmadalone/integration-kodi",
   "setup_data_schema": {
     "title": {
       "en": "Integration setup",
