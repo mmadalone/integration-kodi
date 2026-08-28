@@ -29,9 +29,9 @@ if sys.platform == "win32":
 _LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(_LOOP)
 
-address = "192.168.1.60"  # PC
+# address = "192.168.1.60"  # PC
 # address = "192.168.1.45"  # Mac
-# address = "192.168.1.20"  # Shield
+address = "192.168.1.20"  # Shield
 username = "kodi"
 password = "ludi"
 
@@ -103,15 +103,16 @@ async def main():
     # print("Results")
     # print_json(data=properties)
 
-    # arguments = {
-    #     "directory": "smb://jedi/Videos/",
-    #     "properties": ["mimetype", "thumbnail"],
-    #     "media": "video",
-    #     "limits": {"start": 0, "end": 20},
-    # }
-    # properties = await client.server.Files.GetDirectory(**arguments)
-    # print("Results")
-    # print_json(data=properties)
+    arguments = {
+        "directory": "smb://jedi/Videos/Download",
+        "properties": ["mimetype", "thumbnail", "art"],
+        "media": "files",
+        "limits": {"start": 0, "end": 20},
+    }
+    print_json(data=arguments)
+    properties = await client.server.Files.GetDirectory(**arguments)
+    print("Results")
+    print_json(data=properties)
 
     # arguments = {
     #     "properties": ["title", "thumbnail", "art", "fanart"],
@@ -122,20 +123,20 @@ async def main():
     # print("Results")
     # print_json(data=properties)
 
-    arguments = {
-        "directory": "smb://jedi/Videos/Comédie/",
-        "properties": ["mimetype", "thumbnail"],
-        "media": "video",
-        "limits": {"start": 0, "end": 12},
-        # "sort": {"method": "date", "order": "descending"},
-    }
-    start_time = datetime.now()
-    properties = await client.server.Files.GetDirectory(**arguments)
-    end_time = datetime.now()
-    print("Results")
-    print_json(data=properties)
-    elapsed_time = end_time - start_time
-    print(f"Temps écoulé : {elapsed_time}")
+    # arguments = {
+    #     "directory": "smb://jedi/Videos/Comédie/",
+    #     "properties": ["mimetype", "thumbnail"],
+    #     "media": "video",
+    #     "limits": {"start": 0, "end": 12},
+    #     # "sort": {"method": "date", "order": "descending"},
+    # }
+    # start_time = datetime.now()
+    # properties = await client.server.Files.GetDirectory(**arguments)
+    # end_time = datetime.now()
+    # print("Results")
+    # print_json(data=properties)
+    # elapsed_time = end_time - start_time
+    # print(f"Temps écoulé : {elapsed_time}")
     exit(0)
     # arguments = {
     #     "properties": ["file", "art", "thumbnail"],

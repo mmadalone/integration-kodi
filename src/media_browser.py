@@ -376,14 +376,20 @@ class MediaBrowser:
             )
             self._remember_browse_title(media_id, label)
             return item
+        thumbnail: str | None = None
         if extract_thumbnail:
-            if thumbnail := file.get("thumbnail", ""):
-                thumbnail = self.get_artwork_url(thumbnail)
-            else:
-                if thumbnail := file.get("file"):
-                    thumbnail = self._device.client.get_thumbnail_from_file(thumbnail.rstrip("/"))
-        else:
-            thumbnail: str | None = None
+            if art := file.get("art", ""):
+                art = get_artwork(art)
+                if art:
+                    thumbnail = self.get_artwork_url(art)
+            if thumbnail is None:
+                if kodi_thumbnail := file.get("thumbnail", ""):
+                    thumbnail = self.get_artwork_url(kodi_thumbnail)
+                elif str(file.get("mimetype", "")).lower().startswith("image/"):
+                    # A video-backed image:// URL makes Kodi decode the media when the
+                    # remote fetches it, which can exhaust Kodi for large network files.
+                    if file_path := file.get("file"):
+                        thumbnail = self._device.client.get_thumbnail_from_file(file_path.rstrip("/"))
         item = BrowseMediaItem(
             title=label,
             media_id=media_id,
@@ -980,7 +986,7 @@ class MediaBrowser:
                     if self.add_back_entry(item.media_id, pagination_options):
                         item.items.append(self.get_back_item("kodi://sources"))
                     for file in data.get("files", data.get("sources", [])):
-                        sub = self.get_item_from_file(file, media_type, False)
+                        sub = self.get_item_from_file(file, media_type, True)
                         if sub is not None:
                             item.items.append(sub)
                 elif entry.output == KodiObjectType.MOVIE:
@@ -1151,7 +1157,7 @@ class MediaBrowser:
 
                     arguments: dict[str, Any] = {
                         "directory": media_id,
-                        "properties": ["mimetype", "thumbnail"],
+                        "properties": ["mimetype", "thumbnail", "art"],
                         "media": kodi_type,
                         "limits": {
                             "start": (pagination_options.page - 1) * limit,
@@ -1169,7 +1175,7 @@ class MediaBrowser:
                     data = await self._device.server.Files.GetDirectory(**arguments)
                     if data:
                         for file in data.get("files", []):
-                            sub = self.get_item_from_file(file, media_type, kodi_type != "files")
+                            sub = self.get_item_from_file(file, media_type, extract_thumbnail=True)
                             if sub is not None:
                                 item.items.append(sub)
                         pagination_options.count = data.get("limits", {}).get("total", 0)
@@ -1227,9 +1233,7 @@ class MediaBrowser:
                     data = await self._device.server.Files.GetDirectory(**arguments)
                     if data:
                         for file in data["files"]:
-                            # Thumbnail extraction only works with pictures
-                            extract_thumbnail = media == KodiMediaTypes.PICTURES.value
-                            sub = self.get_item_from_file(file, media_type, extract_thumbnail)
+                            sub = self.get_item_from_file(file, media_type, True)
                             if sub is not None:
                                 item.items.append(sub)
                         pagination_options.count = data.get("limits", {}).get("total", 0)
