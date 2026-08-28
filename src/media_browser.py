@@ -458,8 +458,8 @@ class MediaBrowser:
         # to library-matched files browsed with media=files), then Kodi's own reported thumbnail,
         # then derive the image from the file itself — image/* files only. Runs ahead of the
         # directory branch so folders keep Kodi-supplied art too (videodb:// nodes, upnp://
-        # containers, pvr:// folders); derive can never fire for a folder because its mimetype is
-        # x-directory/normal, never image/*.
+        # containers); derive does not fire for a folder because no mimetype Kodi assigns to one
+        # is image/* (x-directory/normal, or an archive/playlist type for file-folders).
         if thumbnail_url is None and extract_thumbnail:
             if art := file.get("art", ""):
                 art = get_artwork(art)
@@ -1092,7 +1092,8 @@ class MediaBrowser:
                         if _video_only and _is_blocked_video_only_extension(file):
                             continue
                         # Patch 30 sidecar wins; otherwise get_item_from_file walks
-                        # art > thumbnail > derive-iff-image (upstream v1.21.0).
+                        # art > thumbnail > derive-iff-image (upstream v1.21.0). Note: Kodi's
+                        # Files.GetSources returns label+file only, so both are no-ops here today.
                         _sidecar = _sidecar_map.get(file.get("file", ""))
                         _thumb_url = self._device.client.get_thumbnail_from_file(_sidecar) if _sidecar else None
                         sub = self.get_item_from_file(
