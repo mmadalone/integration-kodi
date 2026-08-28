@@ -452,6 +452,27 @@ class MediaBrowser:
             )
             return None
         label = strip_kodi_formatting(file.get("label", ""))
+        # Patch 30 (+ upstream v1.20.2 / v1.21.0): explicit thumbnail_url (sidecar) wins. Otherwise,
+        # when extract_thumbnail is requested, walk Kodi's art dict (poster > fanart > album.thumb
+        # > thumb — populated for library-matched items; on Kodi 22+ xbmc/xbmc#28244 extends that
+        # to library-matched files browsed with media=files), then Kodi's own reported thumbnail,
+        # then derive the image from the file itself — image/* files only. Runs ahead of the
+        # directory branch so folders keep Kodi-supplied art too (videodb:// nodes, upnp://
+        # containers, pvr:// folders); derive can never fire for a folder because its mimetype is
+        # x-directory/normal, never image/*.
+        if thumbnail_url is None and extract_thumbnail:
+            if art := file.get("art", ""):
+                art = get_artwork(art)
+                if art:
+                    thumbnail_url = self.get_artwork_url(art)
+            if thumbnail_url is None:
+                if kodi_thumbnail := file.get("thumbnail", ""):
+                    thumbnail_url = self.get_artwork_url(kodi_thumbnail)
+                elif str(file.get("mimetype", "")).lower().startswith("image/"):
+                    # A video-backed image:// URL makes Kodi decode the media when the
+                    # remote fetches it, which can exhaust Kodi for large network files.
+                    if file_path := file.get("file"):
+                        thumbnail_url = self._device.client.get_thumbnail_from_file(file_path.rstrip("/"))
         if file.get("filetype", "directory") == "directory":
             item = BrowseMediaItem(
                 title=label,
@@ -466,24 +487,6 @@ class MediaBrowser:
             )
             self._remember_browse_title(media_id, label)
             return item
-        # Patch 30 (+ upstream v1.20.2 / v1.21.0): explicit thumbnail_url (sidecar) wins. Otherwise,
-        # when extract_thumbnail is requested, walk Kodi's art dict (poster > fanart > thumb —
-        # populated for library-matched items today, and for plain files on Kodi 22+ once
-        # xbmc/xbmc#28244 lands), then Kodi's own reported thumbnail, then derive the image from
-        # the file itself — image/* files only.
-        if thumbnail_url is None and extract_thumbnail:
-            if art := file.get("art", ""):
-                art = get_artwork(art)
-                if art:
-                    thumbnail_url = self.get_artwork_url(art)
-            if thumbnail_url is None:
-                if kodi_thumbnail := file.get("thumbnail", ""):
-                    thumbnail_url = self.get_artwork_url(kodi_thumbnail)
-                elif str(file.get("mimetype", "")).lower().startswith("image/"):
-                    # A video-backed image:// URL makes Kodi decode the media when the
-                    # remote fetches it, which can exhaust Kodi for large network files.
-                    if file_path := file.get("file"):
-                        thumbnail_url = self._device.client.get_thumbnail_from_file(file_path.rstrip("/"))
         item = BrowseMediaItem(
             title=label,
             media_id=media_id,
@@ -1324,8 +1327,8 @@ class MediaBrowser:
                         "directory": media_id,
                         # Patch 30 + v1.20.2 + v1.21.0: request "thumbnail" and "art" so videos
                         # without a sidecar can fall back to Kodi's library artwork / reported
-                        # thumbnail (populated when media=video; "art" also arrives for plain files
-                        # on Kodi 22+ once xbmc/xbmc#28244 lands).
+                        # thumbnail (populated when media=video; on Kodi 22+ xbmc/xbmc#28244 also
+                        # fills "art" for library-matched files browsed with media=files).
                         "properties": ["mimetype", "thumbnail", "art"],
                         "limits": {
                             "start": (pagination_options.page - 1) * limit,
