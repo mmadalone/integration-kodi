@@ -1760,8 +1760,12 @@ class MediaBrowser:
                                     can_play=True,
                                     can_search=True,
                                     subtitle=(str(playlist_item.get("year")) if playlist_item.get("year") else None),
-                                    album=playlist_item.get("album", None),
-                                    artist=get_element(playlist_item.get("artist", None)),
+                                    # Same guard as add_now_playing_item() above, over the same
+                                    # `current_playlist.playlist["items"]` array: ucapi rejects
+                                    # empty strings for album/artist ("must be at least 1
+                                    # characters"), which would abort the whole playlist listing.
+                                    album=playlist_item.get("album", None) or None,
+                                    artist=get_element(playlist_item.get("artist", None)) or None,
                                     duration=int(duration) if duration else None,
                                 )
                             )

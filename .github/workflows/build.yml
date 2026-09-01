@@ -41,8 +41,16 @@ jobs:
       - name: Fetch all tags to determine version
         run: |
           git fetch origin +refs/tags/*:refs/tags/*
-          echo VERSION="v$(jq .version -r driver.json)" >> $GITHUB_ENV
-        # echo "VERSION=$(git describe --match "v[0-9]*" --tags HEAD --always)" >> $GITHUB_ENV
+          # On a TAG build the version must come from the git ref, not from driver.json.
+          # Deriving it from driver.json made the "Verify driver.json version" step below
+          # compare driver.json against itself, so it could never fail: tagging with a stale
+          # driver.json published an asset named after the OLD version, on the new tag, green.
+          # env.VERSION also feeds ARTIFACT_NAME, so this controls the release filename too.
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo VERSION="${{ github.ref_name }}" >> $GITHUB_ENV
+          else
+            echo VERSION="v$(jq .version -r driver.json)" >> $GITHUB_ENV
+          fi
 
       - name: Verify driver.json version for release build
         if: contains(github.ref, 'tags/v')
