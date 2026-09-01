@@ -931,7 +931,7 @@ This section is the operational counterpart to §1.8 (research-first) and AP-K3 
 | ucapi protocol spec | [unfoldedcircle/core-api WebSocket Integration API](https://unfoldedcircle.github.io/core-api/integration/) | Anonymous (docs) | Event surface, attribute names, status codes |
 | ucapi-python README + examples | [unfoldedcircle/integration-python-library](https://github.com/unfoldedcircle/integration-python-library) | N/A | Entity registration patterns, event emission |
 | UC3 device entity store | `GET http://<uc3>/api/entities/<entity_id>` | PIN-based | What state UC core thinks the entity is in |
-| Integration logs | `GET http://<uc3>:8088/api/integration-logs/entries?service=core` | PIN-based | Driver process stdout/stderr captured by UC core |
+| Integration logs | `GET http://<uc3>/api/system/logs?s=custom-intg-<driver_id>&limit=4000` | PIN-based | Driver stdout/stderr, ~1 h ring buffer. Never pass `?q=` (hangs the server). The older `:8088/api/integration-logs/entries` form 302d to `/manager/port-moved` in 2026-09. |
 | Logdy WS log stream | `ws://<uc3>:80/log/ws` | Anonymous | Live diagnostic stream during repro |
 
 ### §13.2 ucapi entity store inspection

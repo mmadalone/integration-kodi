@@ -1,12 +1,20 @@
 # Kodi Integration for Unfolded Circle Remote 3 (Patched Fork)
 
-Fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (currently rebased onto **v1.21.0**) with bug fixes for title formatting, artwork loading, playback state, and power-off control, plus additional setup-flow toggles and simple commands.
+Fork of [albaintor/integration-kodi](https://github.com/albaintor/integration-kodi) (currently merged up to **v1.21.1**) with bug fixes for title formatting, artwork loading, playback state, and power-off control, plus additional setup-flow toggles and simple commands.
 
-All upstream features (including the v1.20.0 PVR/Addons browsing + Favourites support, the v1.20.1 livetv/favourites improvements, the v1.20.2 Kodi-credential URL-encoding fix and the v1.21.0 browse-artwork groundwork — the latter only lights up on Kodi 22 once xbmc/xbmc#28244 ships) are inherited as-is. All credit for the integration itself goes to [Albaintor](https://github.com/albaintor). This fork applies targeted patches only — no upstream logic has been altered.
+All upstream features (including the v1.20.0 PVR/Addons browsing + Favourites support, the v1.20.1 livetv/favourites improvements, the v1.20.2 Kodi-credential URL-encoding fix, the v1.21.0 browse-artwork groundwork — which only lights up on Kodi 22 once xbmc/xbmc#28244 ships — and the v1.21.1 empty-subtitle browse crash fix) are inherited as-is. All credit for the integration itself goes to [Albaintor](https://github.com/albaintor). This fork applies targeted patches only — no upstream logic has been altered.
 
 Requires remote firmware `>= 1.7.10`.
 
-**Current build:** `v1.21.0-madalone.1` (2026-08-28) — [GitHub Releases](https://github.com/mmadalone/integration-kodi/releases). Install the `uc-intg-kodi-*-aarch64.tar.gz` asset via the remote's web configurator (Integrations → + → Upload); after that first manual install, [uc-intg-manager](https://github.com/JackJPowell/uc-intg-manager) tracks this repository for updates (point releases `-madalone.N` must be picked via its *Specify version* box, e.g. `v1.21.0-madalone.2`). See [`CHANGELOG.md`](CHANGELOG.md) for release history and [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md) for per-patch implementation notes.
+**Current build:** `v1.21.1-madalone.1` (2026-09-01, on-device validation pending; last fully validated release `v1.20.2-madalone.1`, 2026-07-24) — [GitHub Releases](https://github.com/mmadalone/integration-kodi/releases). Install the `uc-intg-kodi-*-aarch64.tar.gz` asset via the remote's web configurator (Integrations → + → Upload). See [`CHANGELOG.md`](CHANGELOG.md) for release history and [`KODI-INTEGRATION-PATCHES.md`](KODI-INTEGRATION-PATCHES.md) for per-patch implementation notes.
+
+> ### ⚠️ Do not update this integration with uc-intg-manager
+>
+> **Install and update it by uploading the release tarball in the web configurator — that is the only path that works for this fork.**
+>
+> [uc-intg-manager](https://github.com/JackJPowell/uc-intg-manager) resolves Kodi updates against **albaintor's upstream repository**, not this one, and pressing its Update button installs stock upstream **over every patch listed below**. Setting `driver.json` `developer.url` to this repo does not help: the manager reads the remote's drivers-**list** endpoint (`GET /intg/drivers`), which omits the `developer` object entirely, so the value is always empty and the manager falls back to the registry entry that owns the shared `driver_id` `kodi_driver` — albaintor's. Its *Specify version* box resolves against that same upstream repo, so a `-madalone.N` tag 404s there.
+>
+> Keep the manager's `auto_update` setting **off**. If it does overwrite the fork, re-upload the tarball — `driver_id` is unchanged, so your instance config, entities and activity buttons survive; the tell is the version string dropping to a plain `1.21.x`.
 
 ## Patches
 
@@ -145,6 +153,7 @@ Post-`.3` work concentrated on the artwork pipeline. Full per-patch detail in [`
 - **`.5`** (patches 41–42) — `_post_subscribe_refresh` re-pushes the device snapshot to new media_player subscribers (turned out to be a firmware bug fixed in UC-Remote-UI v1.4.10; harmless on newer firmware); `_artwork_pending_retry` flag fixes the deferred-retry path that was self-skipping after a fetch failure.
 - **`.6`** (patch 43) — clear `MEDIA_IMAGE_URL` in the no-players watchdog branch so the remote stops showing stale artwork when Kodi goes idle without firing a clean `OnStop`.
 - **`.7`** (patch 44) — new `artwork_type_channels` config field with its own `MediaContentType.CHANNEL` branch in artwork-type selection. PVR / PseudoTV channels (`_item['type']='channel'`) were silently inheriting the generic `artwork_type` setting (default `"thumb"`), which on PseudoTV resolved to the embedded currently-airing show's season poster instead of the channel logo. New dropdown in setup with a `"thumbnail"` sentinel that wraps bare `special://...` paths into `image://...` so they resolve through `pykodi.thumbnail_url()` like any other URL.
+- **`v1.21.1-madalone.1`** (patches 46–47) — closed the ucapi `min_len=1` *listing-abort* bug class. `ucapi` rejects an empty string for `subtitle`, `album`, `artist` and `thumbnail`, and the browse handler catches the resulting `ValueError` and answers with the Kodi library root — so a single bad row silently collapsed a whole listing with no error shown. Upstream's `v1.21.1` fixed the episode/movie subtitle; this fork fixed the rest: blank album artist, an addon with no icon (one iconless addon collapsed the entire `kodi://addons/*` listing), a PVR channel with neither thumbnail nor icon, untagged playlist items, and — the root cause of most of them — `get_artwork()` treating an art key that is present-but-empty as a hit, which both leaked `""` and suppressed a perfectly good `fanart`. Verified with `tools/repro_ucapi_minlen.py`: 9 of 10 cases raised at `v1.21.0-madalone.1`, 0 of 10 after.
 - **`.8`** (patch 44b — same-day hotfix to `.7`) — flipped the `artwork_type_channels` default from `"thumbnail"` to `"icon"` after real-PVR testing showed `art["icon"]` is the channel logo on **both** PseudoTV (`image://special://...pseudotv.../logos/<channel>.png/`) and real PVR (`image://pvrchannel_tv@<encoded>/`), while top-level `item['thumbnail']` is structurally inverted between them: channel logo on PseudoTV but EPG program-art (the now-airing show's poster from the broadcaster's CDN) on real PVR. Sentinel handling preserved for the rare opt-in case.
 
 ## Recommended Settings
@@ -185,7 +194,7 @@ cd /tmp/kodi-pkg && tar czf uc-intg-kodi-patched.tar.gz .
 4. Upload the `.tar.gz` file
 5. Start setup and re-enter your Kodi instance details
 
-There is no in-place update for custom integrations — removal and reinstall is required.
+There is no in-place update for custom integrations — removal and reinstall is required. Do **not** use uc-intg-manager's Update button (see the warning at the top of this file).
 
 ## Companion Firmware Fix
 
