@@ -11,6 +11,20 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
+### v1.21.1-madalone.1 — 2026-09-01
+
+**Merged upstream `v1.21.1` into the fork** (single upstream commit `a19d2e3`, "Fix empty media subtitles in browsing and bump version"). New branch `v1.21.1-patched` off `v1.21.0-madalone.1`; `src/media_browser.py` auto-merged with zero conflict, `driver.json` was the only conflict.
+
+- **Browsing a TV season no longer bounces you to the library root (upstream fix).** ucapi rejects an empty `subtitle` (`validate_str`, `min_len=1`), and `get_item_from_episode` has no `year` fallback — so any **unwatched, unrated, never-resumed** episode raised `ValueError`, which the integration's own browse handler caught and answered with the Kodi library root, silently and with no error dialog. Same raise made `search` return zero results. Upstream's `" ".join(subtitles) or None` at the movie and episode builders fixes it. Not a cosmetic change.
+- **Patch 46 (fork) — playlist listings with untagged items.** The same ucapi `min_len=1` rule applies to `album` and `artist`, and the `kodi://playlist/...` branch passed both through unguarded, so a queue containing one untagged item aborted the whole listing the same way. The integration already carried this exact guard for the *now-playing* item over the **same** `playlist["items"]` array — patch 46 extends it to the rest of the list. Upstream `v1.21.1` still has the unguarded code.
+- **CI release guard fixed (fork).** The "Verify driver.json version" step compared `driver.json` against itself and could never fail; since that value also names the release asset, tagging with a stale `driver.json` would have published an asset named after the previous version, on the new tag, with green CI. Tag builds now take the version from the git ref.
+- **Known-latent, not shipped:** `title` is mandatory and validated the same way, and ~9 sites derive it from a Kodi label that can be empty. `or None` is the wrong fix there (the field is required); needs a fallback or a skip. Filed in `KODI-INTEGRATION-PATCHES.md`, not fixed blind.
+- No entity feature / attribute / stored-config / dependency changes → **no breaking changes**. ruff clean.
+
+> **Note on updates:** do **not** use Integration Manager's Update button for this integration. It resolves Kodi updates against the *upstream* repository regardless of `driver.json` `developer.url`, because it reads the Core API drivers-**list** endpoint, which omits the `developer` object — so the registry entry for the shared `kodi_driver` id always wins. Pressing Update installs stock upstream over the fork's patches. Install and update by uploading the release tarball in the web configurator.
+
+---
+
 ### v1.21.0-madalone.1 — 2026-08-28
 
 **Merged upstream `v1.21.0` into the fork** (single upstream commit `2ecd63b`, "Added support for upcoming improved Kodi browsing (artwork extraction from sources and favorites)"). New branch `v1.21.0-patched` off `v1.20.2-madalone.1`.

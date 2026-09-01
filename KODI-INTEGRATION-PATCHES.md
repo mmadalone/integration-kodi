@@ -1798,3 +1798,90 @@ Three conflict blocks, all inside patch 25/30 regions; the `smb://` branch hunks
 - **V11** ~~Only then: `git tag -a v1.21.0-madalone.1` + push branch and tag.~~ Done 2026-08-28 (ahead of V0-V10, see release note).
 
 ---
+
+## Patch 46: Empty `album` / `artist` in Playlist Browse (`v1.21.1-madalone.1`, 2026-09-01)
+
+**Problem.** Same failure class as upstream `v1.21.1`, at a site upstream did not fix. ucapi 0.7.0 validates `album` and `artist` with the same `validate_str(..., min_len=1)` that rejects `subtitle=""` (`ucapi/entity.py:19` + `ucapi/media_player.py:592-593`), so `album=""` raises `ValueError: album must be at least 1 characters`. The `kodi://playlist/<id>/<pos>` branch of `browse_media` (`src/media_browser.py` ~:1764) passed both straight through:
+
+```python
+album=playlist_item.get("album", None),
+artist=get_element(playlist_item.get("artist", None)),
+```
+
+`get_element()` maps `None` and empty *lists* to `None`, but returns `""` unchanged for `""` (`media_browser.py:171-177`), and `Playlist.GetItems` requests both properties (`kodi_device.py:2467-2482`). Kodi returns `""` for an untagged item. The raise lands in the same `except ValueError` at `:1786` as the subtitle bug, so the symptom is identical: the whole playlist listing is abandoned and the user is silently returned to the library root.
+
+**Reachability is not theoretical.** `add_now_playing_item()` already carries this exact guard at `:867-869`, with the comment *"ucapi rejects empty strings for album/artist ('must be at least 1 characters'); coerce "" to None to avoid aborting the whole root listing"* — and it reads `current_playlist.playlist["items"][current_playlist.position]`, i.e. **one element of the very array this loop iterates**. The bug was already hit and fixed for the now-playing element; this patch covers the remaining elements.
+
+**Solution.** Mirror the existing guard:
+
+```python
+album=playlist_item.get("album", None) or None,
+artist=get_element(playlist_item.get("artist", None)) or None,
+```
+
+**Upstream status.** `albaintor/integration-kodi` `v1.21.1` has the identical unguarded code — candidate for the outbound PR queue (Tier D), and it is a 2-line change with no fork coupling.
+
+**Known-latent, deliberately NOT fixed.** `title` is **mandatory** and validated at `min_len=1` too, and ~9 sites do `title=strip_kodi_formatting(x.get("label", ""))` (`:549, 600, 619, 637, 671, 693, 741, 754, 781`, plus both arms of the playlist ternary at `:1752-1755`); `strip_kodi_formatting` returns `""` for falsy input, so an empty Kodi label aborts the listing the same way. `or None` is the **wrong** fix there — `validate_str` raises `TypeError` on `None` for a required field. It needs a fallback string or a skip, like the `MAX_MEDIA_ID_LEN` path. Lower reachability (Kodi labels are rarely empty); filed here rather than shipped blind.
+
+**AP-K trigger:** none applies. AP-K1 no (no `Features.*` touched). AP-K2 no (artwork block untouched; `album`/`artist` share no state with `_thumbnail` / `_media_image_url` / `_artwork_pending_retry`). AP-K3 no (the symptom is a **server-side exception with a log line**, not a rendering artefact — no firmware check owed). AP-K4 no (no config default, no art-dict shape dependency). AP-K5 — see the merge section below.
+
+---
+
+## Upstream Merge to v1.21.1 (2026-09-01)
+
+Merged upstream tag `v1.21.1` (commit `a19d2e3`, released 2026-09-01) into a new `v1.21.1-patched` branch off `v1.21.0-patched` tip `6a749db` (= tag `v1.21.0-madalone.1` plus its docs commits) → merge commit `a1773ab`. One upstream commit: *"Fix empty media subtitles in browsing and bump version"*, +3/−3 across `driver.json` and `src/media_browser.py`. `min_core_api` unchanged (`0.20.0`). No `kodi_device.py` / `pykodi/` / config / setup / dependency / CI changes.
+
+`git merge-tree --write-tree` predicted it exactly: **`src/media_browser.py` auto-merges with zero conflict**, `driver.json` is the only conflict. Both target builders — `get_item_from_movie` (fork `:522`) and `get_item_from_episode` (fork `:559`) — were **byte-identical** to upstream `v1.21.0` (`diff` of upstream 425-460 vs fork 522-557 and upstream 462-511 vs fork 559-608 → empty), so the fork's 194 added lines never touched either body. Constant +97-line offset; do not rely on it next time.
+
+### What upstream changed
+Two sites, identical edit: `subtitle = " ".join(subtitles)` → `subtitle = " ".join(subtitles) or None`, at fork `:544` (movie) and `:597` (episode).
+
+**This is a crash fix, not a cosmetic one.** ucapi 0.7.0's `BrowseMediaItem.__post_init__` calls `validate_str("subtitle", ...)`, whose `min_len` defaults to 1 (`ucapi/entity.py:19`, raising at `:32`), so `subtitle=""` raises `ValueError: subtitle must be at least 1 characters` — reproduced by calling the fork's own `get_item_from_movie()` / `get_item_from_episode()` against a freshly downloaded PyPI 0.7.0 wheel. `requirements.txt` pins `ucapi~=0.7.0` and 0.7.0 is the only 0.7.x on PyPI, so the pin can only resolve there.
+
+`get_item_from_movie` appends `year` (so a movie almost always has one subtitle element), but **`get_item_from_episode` has no `year` fallback** — its `subtitles` list stays empty for an episode that is unwatched, unrated and has no resume point. `" ".join([])` → `""` → raise.
+
+**Symptom, precisely:** the exception does *not* reach ucapi's `SERVER_ERROR` handler. The fork's own `browse_media` handler catches it first (`media_browser.py:1786-1794` lists `ValueError`, logs `_LOG.exception("[%s] Error while browsing media …")`) and falls through to `# Return library root` at `:1809`. So the user opens a TV season — or `kodi://tvshows/recent` — and is **silently bounced to the Kodi library root, with no error dialog**. On the search path (`search_movies` → `search_media`'s broad `except` at `:2308`) the same raise yields zero results. Triage grep is `"Error while browsing media"` / `"must be at least"` — **not** `"Failed to call MediaPlayer.browse"`.
+
+### Fork sites audited and left alone
+
+| Fork line | Site | Why unchanged |
+|---|---|---|
+| `:777` | `get_item_from_channel` | already joins with a separator `if subtitles else None`, + 255-char truncate — fork code, already hardened |
+| `:796` | `get_item_from_addon` | already `strip_kodi_formatting(...) or None` + truncate |
+| `:1762` | playlist `subtitle=` | already `str(year) if year else None` (unmodified upstream) |
+| `:80` | comment | patch 25 companion-file comment; the only subtitle-mentioning line the fork adds |
+
+`grep -c` confirms the bare string `        subtitle = " ".join(subtitles)` occurred exactly twice. No `BrowseMediaItem(` exists outside `media_browser.py` (23 constructions, all in that file; only 5 pass `subtitle=`).
+
+### Fork additions in this release
+- **Patch 46** (above) — the same bug class at the unguarded playlist `album`/`artist` site.
+- **CI version guard made real.** The "Verify driver.json version for release build" step was **tautological**: `env.VERSION` was set from `driver.json` and then compared to `DRIVER_VERSION` read from `driver.json` — the file against itself, so it could never fail. Since `env.VERSION` also feeds `ARTIFACT_NAME`, tagging with a stale `driver.json` would have published `uc-intg-kodi-v<OLD>-aarch64.tar.gz` on the **new** tag, green and silent. On tag builds `VERSION` now comes from `github.ref_name`; branch builds keep the driver.json-derived value. (CLAUDE.md previously documented this guard as working — corrected.)
+
+### Conflict resolution (1 file)
+- **`driver.json`** — fork version → `1.21.1-madalone.1` (**not** upstream's plain `1.21.1`), `release_date` → `2026-09-01`; fork `developer` / `home_page` / 3-locale description blocks kept; `min_core_api` `0.20.0`.
+
+### AP-K5 assessment (divergent change)
+`media_browser.py` has now taken changes in three consecutive release windows (v1.20.2 sidecar/Kodi-thumbnail fallback, v1.21.0 art tier + mimetype gate + chain collapse, v1.21.1 subtitle + patch 46). **The signal does not fire as a refactor demand**, for a specific reason: the v1.21.0 merge already *performed* the AP-K5 remedy for this subsystem — it collapsed three duplicated thumbnail chains into one owned by `get_item_from_file`. The v1.21.1 changes are a different concern entirely (ucapi input validation on scalar fields, not thumbnail-resolution state) and add no branches and no shared state. What they *do* expose is a systematic gap worth one structural fix later: **every `BrowseMediaItem` field that ucapi validates at `min_len=1` is a latent listing-abort**, and the fork currently guards them one site at a time. A single `_nz(value)` helper — or validating at construction — applied across all 23 construction sites would close the class, including the `title` case patch 46 explicitly declines to fix with `or None`. Not blocking this release.
+
+### Tooling
+`ruff check src/` → *All checks passed!*; `ruff format --check src/` → *16 files already formatted*. `.github/workflows/build.yml` re-parsed as YAML after the edit.
+
+**Rollback path:** the merge lives on the fresh `v1.21.1-patched` branch; `v1.21.0-patched` (tip `6a749db`, tag `v1.21.0-madalone.1`) is untouched. To abandon: `git checkout v1.21.0-patched && git branch -D v1.21.1-patched`. The previous release tarball is the deploy-side rollback.
+
+### On-device validation checklist
+Carries forward the **unrun** V0-V11 from the v1.21.0 merge (that release was tagged ahead of its checklist) — run those too, since this build is the first that will realistically be deployed after them.
+
+- **W1 (the fix, negative baseline — do this BEFORE deploying):** on the current `1.21.0-madalone.1` build, browse to a TV season containing an **unwatched, unrated, never-resumed** episode. Expect the silent bounce to the Kodi library root. Then within the hour pull `GET http://192.168.2.204/api/system/logs?s=custom-intg-kodi_driver&limit=4000` and grep locally for `Error while browsing media` / `must be at least`. **Do not use the `?q=` filter — it hangs the server.** The log ring buffer holds roughly one hour, so capture promptly.
+- **W2 (the fix, positive):** deploy `v1.21.1-madalone.1`, browse the same season. It renders, and those episodes simply have no caption line.
+- **W3:** `kodi://tvshows/recent` renders. Search for a movie/episode returns results (the `search_media` path shared the same raise).
+- **W4 (patch 46):** browse `kodi://playlist/...` with a queue containing an **untagged** item (no album/artist — e.g. a plugin stream or a loose file). Listing renders instead of bouncing to root.
+- **W5:** movie browse still shows `<year>` (and rating / "Watched" where applicable) — the `or None` must not have suppressed a populated subtitle.
+- **W6:** integration logs clean of new WARNING/ERROR from `media_browser`; reconfigure flow opens and saves with the existing config.
+- **W7:** only then tag and release (see CLAUDE.md "Release").
+
+### Open / unverified
+- **Nobody has observed the crash on this device.** The `kodi_driver` log ring buffer was inspected (4018 unique lines, 17:24–18:28 UTC) and contained **no browse activity at all** — zero hits for `must be at least`, `ValueError`, `Traceback`, `Error while browsing`. So the bug is proven from the code plus a real ucapi wheel, not from a captured incident. W1 exists to close that.
+- The port-8088 integration-log endpoint documented in the v1.21.0 checklist (V10) is **dead** on core 0.78.0 — it 302s to `/manager/port-moved`. Use `GET /api/system/logs?s=custom-intg-kodi_driver` on port 80 instead (as in W1). V10 as written is unexecutable.
+- Whether *this* Kodi library actually contains a triggering item was not confirmed — the Kodi host (**192.168.2.217**, per `select.192.168.2.217.subtitle_stream` in the driver log) returned HTTP 401 and credentials were not attempted.
+
+---
