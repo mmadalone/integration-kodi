@@ -162,10 +162,19 @@ def get_artwork(artworks: dict[str, str] | None) -> str | None:
     """Return best available artwork."""
     if artworks is None:
         return None
-    return artworks.get(
-        "poster",
-        artworks.get("fanart", artworks.get("album.thumb", artworks.get("thumb", None))),
-    )
+    # Walk in preference order, skipping keys that are PRESENT BUT EMPTY. Kodi
+    # returns "" for art it knows of but has not cached, and the previous nested
+    # `dict.get(key, <fallback>)` chain treated that "" as a hit: an empty
+    # "poster" both suppressed a perfectly good "fanart" and leaked "" to the
+    # caller, whose `if art:` guard then skipped get_artwork_url() and passed the
+    # "" straight into BrowseMediaItem(thumbnail=...). ucapi validates thumbnail
+    # at min_len=1 and raises ValueError on "", which browse_media swallows into
+    # a silent bounce to the library root -- see Patch 46.
+    for key in ("poster", "fanart", "album.thumb", "thumb"):
+        value = artworks.get(key)
+        if value:
+            return value
+    return None
 
 
 def get_element(element: Any | None) -> str | None:
@@ -676,7 +685,9 @@ class MediaBrowser:
             can_search=True,
             thumbnail=art,
             album=strip_kodi_formatting(album.get("label", "")) or None,
-            artist=artist,
+            # `or None` for the same reason as the sibling `album=` above: get_element()
+            # returns "" unchanged for a blank album artist, and ucapi rejects "".
+            artist=artist or None,
             duration=int(duration) if duration else None,
         )
 
@@ -764,7 +775,9 @@ class MediaBrowser:
 
     def get_item_from_channel(self, channel: dict[str, Any]) -> BrowseMediaItem:
         """Build item from a PVR channel (live TV / radio)."""
-        thumbnail: str | None = channel.get("thumbnail") or channel.get("icon")
+        # Trailing `or None`: both keys can be present-but-empty, and "" would slip
+        # past the `if thumbnail:` guard below into ucapi's min_len=1 validator.
+        thumbnail: str | None = channel.get("thumbnail") or channel.get("icon") or None
         if thumbnail:
             thumbnail = self.get_artwork_url(thumbnail)
         subtitles: list[str] = []
@@ -790,7 +803,10 @@ class MediaBrowser:
 
     def get_item_from_addon(self, addon: dict[str, Any]) -> BrowseMediaItem:
         """Build item from a Kodi addon."""
-        thumbnail: str | None = addon.get("thumbnail")
+        # `or None`: Kodi returns "" for an addon with no icon, and "" would slip past
+        # the `if thumbnail:` guard into ucapi's min_len=1 validator, aborting the
+        # entire kodi://addons/* listing for one iconless addon.
+        thumbnail: str | None = addon.get("thumbnail") or None
         if thumbnail:
             thumbnail = self.get_artwork_url(thumbnail)
         subtitle = strip_kodi_formatting(addon.get("description")) or None
