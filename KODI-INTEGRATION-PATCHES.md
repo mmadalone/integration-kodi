@@ -1940,3 +1940,27 @@ Carries forward the **unrun** V0-V11 from the v1.21.0 merge (that release was ta
 - Whether *this* Kodi library actually contains a triggering item was not confirmed — the Kodi host (**192.168.2.217**, per `select.192.168.2.217.subtitle_stream` in the driver log) returned HTTP 401 and credentials were not attempted.
 
 ---
+
+---
+
+## Upstream Merge to v1.21.2 (2026-09-23)
+
+**Upstream:** tag `v1.21.2` = `5807f0e` (version bump) on top of `be9ad84` "Improve Kodi reconnection after remote wake". Merged into new branch `v1.21.2-patched` (from `v1.21.1-patched`). Only conflict: the `driver.json` version line → `1.21.2-madalone.1`. `src/driver.py` and `src/pykodi/kodi.py` merged automatically.
+
+**What upstream changed:**
+- `driver.connect_device()` is now a wake-retry loop (`WAKE_RECONNECT_RETRIES=10`, spaced about 500 ms apart). It publishes state only when `device._kodi_connection.connected` is true, not whenever `connect()` returns.
+- `on_exit_standby` no longer `await`s the connect task. The handler returns immediately so commands aren't blocked while the remote's network comes back.
+- `pykodi` `CannotConnectError(*error.args)` instead of `CannotConnectError(error)`. This is the part that makes the fork's existing `kodi_device.connect()` check `len(ex.args) > 1 and isinstance(ex.args[1], ClientOSError)` work. Before this, the nested `ClientOSError` sat inside a single wrapped argument, so the `ERROR_OS_WAIT` branch never triggered after a wake.
+
+**Compatibility with the fork:** checked by reading the code. `_kodi_connection` / `.connected` exist with the same meaning. Patch 16's narrowed `except` in `KodiWSConnection.connect()` is at a different hunk and doesn't interact. Patch 12's lock timeout makes `connect()` return without connecting, and the new loop handles that by retrying.
+
+**Fork addition:** extended **patch 13** to cover upstream's new fire-and-forget `_LOOP.create_task(connect_device(...))` in `on_exit_standby` → `.add_done_callback(_log_task_exception)`. Without it, an exception in the wake-retry loop would only show up as "Task exception was never retrieved" when the task is garbage-collected.
+
+**Not changed (upstream code, noted):** `KodiWSConnection.connect()` still catches `asyncio.CancelledError` and turns it into `CannotConnectError`. That is pre-existing upstream behaviour and conflicts with fork rule 8. Leaving it as-is to keep the merge small; a candidate for the upstream PR queue.
+
+**Validation (on device, not yet run):**
+- X1: Put the remote to sleep for >1 min with Kodi on, then wake it. The Kodi activity should show live state within ~1–2 s, with no stale "unavailable". In the driver log look for `Connecting device ... after wake (attempt n/10)` and, if the network was slow, `OS error, waiting 0.5s`.
+- X2: Wake the remote with Kodi **off**. Expect 10 attempts, then `leaving regular reconnect logic active`, and no traceback.
+- X3: Press a button right after waking. It should respond without waiting for the reconnect (handler no longer blocks).
+
+**uc-intg-manager:** releasing as `1.21.2-madalone.1` makes the version numbers match upstream `v1.21.2` again, so the false "update available" badge goes away (re-checked 2026-09-23: manager v3.1.0 still resolves `kodi_driver` to albaintor's repo; `auto_update` is off).
