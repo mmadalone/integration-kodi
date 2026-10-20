@@ -46,6 +46,7 @@ from ucapi.select import Attributes as SelectAttributes
 from ucapi.select import States as SelectStates
 
 import media_browser
+from artwork_retry import ArtworkRetry, FetchOutcome, FetchResult
 from config import KodiConfigDevice
 from const import (
     KODI_FEATURES,
@@ -70,16 +71,15 @@ _LOG = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 8.0
 # Patch 40: ARTWORK_TIMEOUT is now a fallback / lower bound only; the per-device value
 # comes from KodiConfigDevice.artwork_timeout_seconds (default 12s, range 5-60s) and is
-# applied via aiohttp.ClientTimeout(total=…) in _fetch_artwork_with_retry. The constant
+# applied via aiohttp.ClientTimeout(total=…) in _fetch_artwork_once. The constant
 # is retained so any future code path that needs an artwork-fetch budget without a
 # device handle still has a sensible default.
 ARTWORK_TIMEOUT = 12.0
-# Patch 40: artwork-fetch retry budget. 3 attempts with delays 0/0.5/1.5s + jitter, so
-# under pathological conditions the worst-case _update_lock hold is roughly
-# 3 x ARTWORK_TIMEOUT + sum(delays) ~= 38s. UPDATE_LOCK_TIMEOUT raised from 10s -> 30s
-# to match: a single watchdog tick should not abandon the lock while a legitimate
-# (just-slow) Kodi instance is still serving the artwork fetch.
-ARTWORK_FETCH_RETRY_DELAYS = (0.0, 0.5, 1.5)
+# Patch 50: the artwork retry schedule lives in artwork_retry.py, and every attempt holds
+# _update_lock for one request only (worst case one artwork timeout) instead of patch 37's
+# inline 3-attempt budget (~38s). UPDATE_LOCK_TIMEOUT keeps the 30s patch 40 sized for it.
+# Delay before an artwork download left unresolved by a disconnect resumes after reconnect.
+ARTWORK_RESUME_DELAY = 0.5
 WEBSOCKET_WATCHDOG_INTERVAL = 10
 CONNECTION_RETRIES = 30
 UPDATE_POSITION_INTERVAL = 300
@@ -407,13 +407,11 @@ class KodiDevice(IKodiDevice):
         # (e.g. PVR EPG cycle, plugin source mid-scrape) so we don't blank
         # _media_image_data on transient empties.
         self._last_item_identity: tuple = (None, "")
-        # Patch 42: artwork-fetch retry-needed flag. Set when _fetch_artwork_with_retry
-        # exhausts its inline retry budget (returns None). Cleared on successful fetch
-        # or genuine no-art state. While set, the artwork block in _update_states is
-        # entered on every poll regardless of whether the thumbnail URL changed —
-        # so the natural watchdog cadence drives recovery instead of getting stuck
-        # because `self._thumbnail` was already mutated by the prior failed attempt.
-        self._artwork_pending_retry: bool = False
+        # Patch 50 (supersedes patch 42's retry flag): retry schedule for the artwork URL
+        # that is wanted but not downloaded yet, and the single task that works through it
+        # (_artwork_retry_loop). Retries no longer re-enter _update_states.
+        self._artwork_retry = ArtworkRetry()
+        self._artwork_retry_task: Task | None = None
         # Patch 51: background _update_states() refreshes, tracked so disconnect() can cancel
         # them (see _schedule_update). Keyed ones are deduplicated by key.
         self._pending_updates: set[Task] = set()
@@ -496,6 +494,9 @@ class KodiDevice(IKodiDevice):
         self._thumbnail = None
         self._media_image_url = ""
         self._media_image_data = ""
+        # Patch 50: nothing is playing, so there is no artwork left to retry.
+        self._cancel_artwork_retry()
+        self._artwork_retry.reset()
         updated_data: dict[str, Any] = {}
         if current_state != self.get_state():
             self._attr_state = self.get_state()
@@ -808,6 +809,8 @@ class KodiDevice(IKodiDevice):
             await self._ping()
             self._media_browser.reset_feature_cache()
             await self._update_states()
+            # Patch 50: an artwork download the last disconnect interrupted resumes now.
+            self._resume_artwork_retry()
             # Deferred re-poll: artwork may not be available immediately when connecting
             # to an already-playing session. Uses the same deferred pattern as _update_states().
             self._schedule_update(3, key="connect-repoll")
@@ -1021,25 +1024,14 @@ class KodiDevice(IKodiDevice):
             self._artwork_session = ClientSession()
         return self._artwork_session
 
-    async def _fetch_artwork_with_retry(self, url: str) -> str | None:
-        """Patch 37: fetch an artwork URL with exponential-backoff retry.
+    async def _fetch_artwork_once(self, url: str) -> FetchResult:
+        """Patch 50: one artwork download attempt (replaces patch 37's inline retry loop).
 
-        Returns a base64 data URI (with the correct image/* MIME — patch 39) on success,
-        or None when all attempts fail. The integration is the sole resilience layer
-        for download_artwork=true on pre-firmware-v1.4.9 remotes (the firmware's 3-retry
-        budget only covers HTTP-URL mode, not base64 mode), so callers should respect
-        a None return as "do not emit MEDIA_IMAGE_URL this poll" — patch 36's omit-on-
-        failure semantic.
-
-        Retry budget: 3 attempts at delays 0.0 / 0.5 / 1.5 seconds (with up to ±20%
-        jitter on the non-zero delays), each attempt subject to the per-device timeout
-        (KodiConfigDevice.artwork_timeout_seconds, applied via aiohttp.ClientTimeout).
-        Worst-case lock hold: ~3 x timeout + 2 s backoff ~= 38 s with the default 12 s
-        timeout. UPDATE_LOCK_TIMEOUT (30 s) is sized to accommodate this without
-        abandoning legitimate just-slow Kodi instances.
-
-        Idempotent under cancellation: aiohttp respects asyncio cancellation cleanly,
-        so a watchdog-cancelled fetch leaves no resource leak.
+        Returns a base64 data URI (with the correct image/* MIME, patch 39) on success.
+        On failure, the outcome tells the retry schedule (artwork_retry.py) whether Kodi
+        answered 4xx (missing image, bad credentials) or the failure was transient.
+        Callers treat a failure as "omit MEDIA_IMAGE_URL" (patch 36) and leave the
+        retries to _artwork_retry_loop, outside _update_lock.
         """
         if self._artwork_session is None or self._artwork_session.closed:
             # Patch 49: this used to skip the fetch. A teardown that leaves the websocket
@@ -1048,58 +1040,108 @@ class KodiDevice(IKodiDevice):
             # reconnect. The fetch below now recreates it.
             _LOG.debug("[%s] artwork session missing, recreating it", self.device_config.address)
 
-        last_err: Exception | None = None
-        for attempt, delay in enumerate(ARTWORK_FETCH_RETRY_DELAYS, start=1):
-            if delay:
-                # Up to 20% jitter so concurrent retries against the same Kodi instance
-                # don't synchronise. Doesn't change worst-case budget meaningfully.
-                await asyncio.sleep(delay + random.uniform(0, 0.2 * delay))  # noqa: S311
-            try:
-                async with self._get_artwork_session().get(url, timeout=self._artwork_timeout) as resp:
-                    # Patch 29b's 200-status check, retained: Kodi returns 404 + HTML body
-                    # for unresolvable image:// URIs, and we must not base64-encode the
-                    # error page. Skip non-200 responses entirely so the retry loop can
-                    # try again — but a stable 404 will simply consume all 3 attempts.
-                    if resp.status != 200:
-                        _LOG.debug(
-                            "[%s] artwork attempt %d non-200 (status=%s url=%s)",
-                            self.device_config.address,
-                            attempt,
-                            resp.status,
-                            url,
-                        )
-                        continue
-                    buffer = b""
-                    async for data, _ in resp.content.iter_chunks():
-                        buffer += data
-                    if not buffer:
-                        _LOG.debug(
-                            "[%s] artwork attempt %d empty body (url=%s)",
-                            self.device_config.address,
-                            attempt,
-                            url,
-                        )
-                        continue
-                    mime = self._sniff_mime(buffer)
-                    encoded = base64.b64encode(buffer).decode("utf-8")
-                    return f"data:{mime};base64,{encoded}"
-            except (ClientError, asyncio.TimeoutError, OSError) as ex:
-                last_err = ex
-                _LOG.debug(
-                    "[%s] artwork attempt %d failed (url=%s): %s",
-                    self.device_config.address,
-                    attempt,
-                    url,
-                    ex,
-                )
-        _LOG.warning(
-            "[%s] artwork fetch exhausted %d retries for %s (last err: %s)",
-            self.device_config.address,
-            len(ARTWORK_FETCH_RETRY_DELAYS),
-            url,
-            last_err,
+        try:
+            async with self._get_artwork_session().get(url, timeout=self._artwork_timeout) as resp:
+                # Patch 29b's 200-status check, retained: Kodi returns 404 + HTML body
+                # for unresolvable image:// URIs, and we must not base64-encode the
+                # error page.
+                if resp.status != 200:
+                    _LOG.debug(
+                        "[%s] artwork fetch non-200 (status=%s url=%s)", self.device_config.address, resp.status, url
+                    )
+                    outcome = FetchOutcome.NOT_FOUND if 400 <= resp.status < 500 else FetchOutcome.TRANSIENT
+                    return FetchResult(None, outcome, f"HTTP {resp.status}")
+                buffer = b""
+                async for data, _ in resp.content.iter_chunks():
+                    buffer += data
+                if not buffer:
+                    _LOG.debug("[%s] artwork fetch empty body (url=%s)", self.device_config.address, url)
+                    return FetchResult(None, FetchOutcome.TRANSIENT, "empty body")
+                mime = self._sniff_mime(buffer)
+                encoded = base64.b64encode(buffer).decode("utf-8")
+                return FetchResult(f"data:{mime};base64,{encoded}", FetchOutcome.OK)
+        except (ClientError, asyncio.TimeoutError, OSError) as ex:
+            _LOG.debug("[%s] artwork fetch failed (url=%s): %r", self.device_config.address, url, ex)
+            return FetchResult(None, FetchOutcome.TRANSIENT, repr(ex))
+
+    def _artwork_retry_wanted(self, url: str) -> bool:
+        """Patch 50: whether a retry for ``url`` is still worth making."""
+        return (
+            self._device_config.download_artwork
+            and self._kodi_connection is not None
+            and self._kodi_connection.connected
+            and self._artwork_retry.url == url
+            and self._media_image_url == url
         )
-        return None
+
+    def _start_artwork_retry(self, url: str, delay: float) -> None:
+        """Patch 50: (re)start the single artwork retry task for ``url``."""
+        self._cancel_artwork_retry()
+        task = self.event_loop.create_task(
+            self._artwork_retry_loop(url, delay), name=f"kodi-artwork-retry[{self.device_config.address}]"
+        )
+        task.add_done_callback(_log_task_exception)
+        self._artwork_retry_task = task
+
+    def _cancel_artwork_retry(self) -> None:
+        """Patch 50: stop the artwork retry task; the retry schedule itself is left as is."""
+        task = self._artwork_retry_task
+        self._artwork_retry_task = None
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def _resume_artwork_retry(self) -> None:
+        """Patch 50: after a reconnect, retry an artwork download the disconnect interrupted.
+
+        Also gives a URL that was given up on (e.g. 404) one more chance per reconnect.
+        """
+        url = self._artwork_retry.url
+        if not url or url != self._media_image_url or not self._device_config.download_artwork:
+            return
+        if self._artwork_retry_task is not None and not self._artwork_retry_task.done():
+            return
+        self._artwork_retry.start(url)
+        self._start_artwork_retry(url, ARTWORK_RESUME_DELAY)
+
+    async def _artwork_retry_loop(self, url: str, delay: float) -> None:
+        """Patch 50: retry the download of ``url`` on the artwork_retry schedule.
+
+        Sleeps outside _update_lock and holds it for one request at a time, so a missing
+        or slow image never delays title/state updates. Ends on success, on give-up, or
+        as soon as ``url`` is no longer the artwork the playing item wants.
+        """
+        while True:
+            await asyncio.sleep(delay)
+            if not self._artwork_retry_wanted(url):
+                return
+            try:
+                await asyncio.wait_for(self._update_lock.acquire(), timeout=UPDATE_LOCK_TIMEOUT)
+            except asyncio.TimeoutError:
+                continue
+            try:
+                if not self._artwork_retry_wanted(url):
+                    return
+                result = await self._fetch_artwork_once(url)
+                if result.data is not None:
+                    self._media_image_data = result.data
+                    self._artwork_retry.reset()
+                    _LOG.debug("[%s] artwork retry succeeded for %s", self.device_config.address, url)
+                    self.events.emit(Events.UPDATE, self.id, {MediaAttr.MEDIA_IMAGE_URL: self.media_artwork})
+                    return
+                next_delay = self._artwork_retry.record_failure(result.outcome, result.detail)
+                if next_delay is None:
+                    hint = " - check the Kodi web server credentials" if result.detail == "HTTP 401" else ""
+                    _LOG.warning(
+                        "[%s] artwork unavailable (%s) for %s; not retrying until the item changes%s",
+                        self.device_config.address,
+                        result.detail,
+                        url,
+                        hint,
+                    )
+                    return
+                delay = next_delay
+            finally:
+                self._update_lock.release()
 
     def _schedule_update(self, deferred: float = 0, *, key: str | None = None) -> None:
         """Patch 51: run _update_states() in the background, tracked so disconnect() can cancel it.
@@ -1126,11 +1168,13 @@ class KodiDevice(IKodiDevice):
         task.add_done_callback(_done)
 
     def _cancel_background_updates(self) -> None:
-        """Patch 51: cancel scheduled refreshes and the chapter/position timers."""
+        """Patch 51: cancel scheduled refreshes, the artwork retry and the chapter/position timers."""
         for task in list(self._pending_updates):
             task.cancel()
         self._pending_updates.clear()
         self._keyed_updates.clear()
+        # Patch 50: keeps the retry schedule, so connect() can resume it (_resume_artwork_retry).
+        self._cancel_artwork_retry()
         for attr in ("_chapter_update_task", "_update_position_task"):
             task = getattr(self, attr)
             if task is not None:
@@ -1393,24 +1437,15 @@ class KodiDevice(IKodiDevice):
                 # item is ignored — prior _media_image_url / _media_image_data retained.
                 _thumbnail_real_change = thumbnail != self._thumbnail and (thumbnail is not None or _item_changed)
 
-                # Patch 42: also enter the artwork block when a previous fetch failed
-                # and retry is still pending. Without this, the deferred retry scheduled
-                # on fetch failure (and any subsequent watchdog tick) would be skipped
-                # because `self._thumbnail == thumbnail` after the failed attempt mutated
-                # it — leaving _media_image_data stuck empty until the playing item
-                # actually changes. Only attempt the retry when we have a URL to retry
-                # AND the user is in download_artwork mode.
-                _retry_pending = (
-                    self._artwork_pending_retry and self._device_config.download_artwork and bool(self._media_image_url)
-                )
-                _should_run_artwork_block = _thumbnail_real_change or _retry_pending
-
-                if _should_run_artwork_block:
-                    if _thumbnail_real_change:
-                        # State transition only on genuine change; retries reuse the
-                        # already-cached _thumbnail / _media_image_url.
-                        self._thumbnail = thumbnail
-                        self._media_image_url = self._kodi.thumbnail_url(thumbnail) or ""
+                # Patch 50: the artwork block runs only on a genuine thumbnail change. A failed
+                # download is retried by _artwork_retry_loop on its own schedule, so patch 42's
+                # term that re-entered this block on every poll (and refetched each time) is gone.
+                if _thumbnail_real_change:
+                    self._thumbnail = thumbnail
+                    self._media_image_url = self._kodi.thumbnail_url(thumbnail) or ""
+                    # A retry still running belongs to the previous URL.
+                    self._cancel_artwork_retry()
+                    self._artwork_retry.reset()
                     # Patch 36: do NOT pre-clear self._media_image_data here. The download
                     # branch below now owns this decision — success overwrites, failure
                     # retains the prior value, genuine no-art clears it explicitly.
@@ -1436,35 +1471,33 @@ class KodiDevice(IKodiDevice):
                                 ex,
                             )
 
-                    # Patch 36/37: artwork fetch + emit semantics. The retry/MIME logic
-                    # lives in _fetch_artwork_with_retry(); here we just translate its
-                    # outcome into a partial-update emit.
+                    # Patch 36/50: artwork fetch + emit semantics. One attempt here, so title and
+                    # art still go out together when it works; on failure the image is omitted
+                    # and _artwork_retry_loop takes over outside _update_lock.
                     _artwork_fetch_failed = False
                     if self._device_config.download_artwork:
                         if self._media_image_url:
-                            _new_data = await self._fetch_artwork_with_retry(self._media_image_url)
-                            if _new_data is None:
+                            self._artwork_retry.start(self._media_image_url)
+                            _result = await self._fetch_artwork_once(self._media_image_url)
+                            if _result.data is None:
                                 _artwork_fetch_failed = True
-                                # Patch 42: arm retry flag so the next poll re-enters
-                                # this block even though _thumbnail is already populated.
-                                self._artwork_pending_retry = True
                                 # Patch 36: omit MEDIA_IMAGE_URL from updated_data on
                                 # fetch failure. ucapi's partial-update protocol retains
                                 # the previous value when a field is absent — emitting ""
                                 # would actively clear the remote's cached image.
+                                _retry_delay = self._artwork_retry.record_failure(_result.outcome, _result.detail)
+                                if _retry_delay is not None:
+                                    self._start_artwork_retry(self._media_image_url, _retry_delay)
                             else:
-                                self._media_image_data = _new_data
-                                # Patch 42: success clears the retry flag.
-                                self._artwork_pending_retry = False
+                                self._media_image_data = _result.data
+                                self._artwork_retry.reset()
                                 updated_data[MediaAttr.MEDIA_IMAGE_URL] = self.media_artwork
                         else:
                             # Genuine "no art" — explicit clear matches on_stop semantics.
                             self._media_image_data = ""
-                            self._artwork_pending_retry = False
                             updated_data[MediaAttr.MEDIA_IMAGE_URL] = ""
                     else:
                         # URL mode: firmware does its own 3-retry budget; emit URL straight.
-                        self._artwork_pending_retry = False
                         updated_data[MediaAttr.MEDIA_IMAGE_URL] = self.media_artwork
 
                     # Mask the data URI body in logs and only show MIME + length.
@@ -1478,23 +1511,14 @@ class KodiDevice(IKodiDevice):
                     else:
                         _art_disp = "<EMPTY>"
                     _LOG.debug(
-                        "[%s] artwork emit: %s "
-                        "(real_change=%s, item_changed=%s, retry_run=%s, fetch_failed=%s, "
-                        "in_updated_data=%s)",
+                        "[%s] artwork emit: %s (real_change=%s, item_changed=%s, fetch_failed=%s, in_updated_data=%s)",
                         self.device_config.address,
                         _art_disp,
                         _thumbnail_real_change,
                         _item_changed,
-                        _retry_pending,
                         _artwork_fetch_failed,
                         MediaAttr.MEDIA_IMAGE_URL in updated_data,
                     )
-
-                    if _artwork_fetch_failed:
-                        # Patch 37: schedule a deferred retry on fetch failure. With
-                        # patch 42's pending-retry flag, the deferred poll now actually
-                        # retries instead of skipping the artwork block.
-                        self._schedule_update(4, key="artwork-retry")
 
                 media_title = media_browser.strip_kodi_formatting(
                     self._item.get("title") or self._item.get("label") or self._item.get("file") or ""
@@ -1720,7 +1744,8 @@ class KodiDevice(IKodiDevice):
                 self._thumbnail = None
                 self._media_image_url = ""
                 self._media_image_data = ""
-                self._artwork_pending_retry = False
+                self._cancel_artwork_retry()  # Patch 50
+                self._artwork_retry.reset()
                 updated_data[MediaAttr.MEDIA_IMAGE_URL] = ""
                 updated_data[MediaAttr.MEDIA_POSITION] = 0
                 updated_data[MediaAttr.MEDIA_DURATION] = 0
