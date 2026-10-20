@@ -90,8 +90,13 @@ ERROR_OS_WAIT = 0.5
 
 def _log_task_exception(task: asyncio.Task) -> None:
     """Log unhandled exceptions from fire-and-forget tasks."""
-    if not task.cancelled() and task.exception():
-        _LOG.error("Unhandled exception in background task: %s", task.exception())
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        # Patch 51: name the task and keep the traceback; the bare message said neither
+        # which task failed nor where.
+        _LOG.error("Unhandled exception in background task %s: %r", task.get_name(), exc, exc_info=exc)
 
 
 # Patch 1 BBCode-strip helper deduplicated against upstream's broader version
@@ -409,6 +414,10 @@ class KodiDevice(IKodiDevice):
         # so the natural watchdog cadence drives recovery instead of getting stuck
         # because `self._thumbnail` was already mutated by the prior failed attempt.
         self._artwork_pending_retry: bool = False
+        # Patch 51: background _update_states() refreshes, tracked so disconnect() can cancel
+        # them (see _schedule_update). Keyed ones are deduplicated by key.
+        self._pending_updates: set[Task] = set()
+        self._keyed_updates: dict[str, Task] = {}
 
     async def init_connection(self):
         """Initialize connection to device."""
@@ -467,7 +476,7 @@ class KodiDevice(IKodiDevice):
         _LOG.debug("[%s] Kodi playback changed %s", self.device_config.address, data)
         if "speed" in data.get("player", {}):
             self._properties["speed"] = data["player"]["speed"]
-        self.event_loop.create_task(self._update_states()).add_done_callback(_log_task_exception)
+        self._schedule_update()
 
     # pylint: disable = W0613
     def on_stop(self, sender: str, data: dict[str, Any]):
@@ -757,7 +766,7 @@ class KodiDevice(IKodiDevice):
                 # watchdog loop keeps its cadence; _update_states() has its
                 # own lock with UPDATE_LOCK_TIMEOUT that handles concurrency.
                 if self._kodi_connection is not None and self._kodi_connection.connected:
-                    asyncio.create_task(self._update_states(deferred=0)).add_done_callback(_log_task_exception)
+                    self._schedule_update()
             except (OSError, TransportError) as ex:
                 _LOG.error("[%s] Watchdog exception %s", self.device_config.address, ex)
                 await asyncio.sleep(5)
@@ -801,7 +810,7 @@ class KodiDevice(IKodiDevice):
             await self._update_states()
             # Deferred re-poll: artwork may not be available immediately when connecting
             # to an already-playing session. Uses the same deferred pattern as _update_states().
-            asyncio.create_task(self._update_states(deferred=3)).add_done_callback(_log_task_exception)
+            self._schedule_update(3, key="connect-repoll")
 
             _LOG.debug("[%s] Connection successful", self._device_config.address)
             if self._websocket_task is None:
@@ -862,6 +871,9 @@ class KodiDevice(IKodiDevice):
     async def disconnect(self):
         """Disconnect from TV."""
         _LOG.debug("[%s] Disconnect %s", self.device_config.address, self.id)
+        # Patch 51: refreshes scheduled while connected would otherwise fire after standby,
+        # against the _kodi_connection that is cleared below.
+        self._cancel_background_updates()
         try:
             if self._websocket_task:
                 self._websocket_task.cancel()
@@ -960,7 +972,8 @@ class KodiDevice(IKodiDevice):
         ):
             return
         if (
-            not self._kodi_connection.connected
+            self._kodi_connection is None  # Patch 51
+            or not self._kodi_connection.connected
             or self._update_lock.locked()
             or self._kodi_is_off
             or self._players is None
@@ -1088,6 +1101,42 @@ class KodiDevice(IKodiDevice):
         )
         return None
 
+    def _schedule_update(self, deferred: float = 0, *, key: str | None = None) -> None:
+        """Patch 51: run _update_states() in the background, tracked so disconnect() can cancel it.
+
+        With a key, the request is dropped while an earlier one with the same key is still
+        pending, unless that earlier one is the caller itself (a retry rescheduling itself).
+        """
+        if key is not None:
+            pending = self._keyed_updates.get(key)
+            if pending is not None and not pending.done() and pending is not asyncio.current_task():
+                return
+        name = f"kodi-update[{self.device_config.address}]+{deferred:g}s" + (f":{key}" if key else "")
+        task = self.event_loop.create_task(self._update_states(deferred=deferred), name=name)
+        self._pending_updates.add(task)
+        if key is not None:
+            self._keyed_updates[key] = task
+
+        def _done(finished: Task) -> None:
+            self._pending_updates.discard(finished)
+            if key is not None and self._keyed_updates.get(key) is finished:
+                del self._keyed_updates[key]
+            _log_task_exception(finished)
+
+        task.add_done_callback(_done)
+
+    def _cancel_background_updates(self) -> None:
+        """Patch 51: cancel scheduled refreshes and the chapter/position timers."""
+        for task in list(self._pending_updates):
+            task.cancel()
+        self._pending_updates.clear()
+        self._keyed_updates.clear()
+        for attr in ("_chapter_update_task", "_update_position_task"):
+            task = getattr(self, attr)
+            if task is not None:
+                task.cancel()
+                setattr(self, attr, None)
+
     # pylint: disable = R0914,R0915
     async def _update_states(self, deferred=0, received_data: dict[str, Any] | None = None) -> None:
         """Update entity state attributes."""
@@ -1097,7 +1146,8 @@ class KodiDevice(IKodiDevice):
         if received_data is None:
             received_data = {}
 
-        if not self._kodi_connection.connected:
+        # Patch 51: disconnect() sets _kodi_connection to None.
+        if self._kodi_connection is None or not self._kodi_connection.connected:
             _LOG.debug("[%s] Update states requested but not connected", self.device_config.address)
             self._reset_state()
             return
@@ -1444,7 +1494,7 @@ class KodiDevice(IKodiDevice):
                         # Patch 37: schedule a deferred retry on fetch failure. With
                         # patch 42's pending-retry flag, the deferred poll now actually
                         # retries instead of skipping the artwork block.
-                        asyncio.create_task(self._update_states(deferred=4)).add_done_callback(_log_task_exception)
+                        self._schedule_update(4, key="artwork-retry")
 
                 media_title = media_browser.strip_kodi_formatting(
                     self._item.get("title") or self._item.get("label") or self._item.get("file") or ""
@@ -1647,7 +1697,7 @@ class KodiDevice(IKodiDevice):
                         media_title,
                         deferred,
                     )
-                    asyncio.create_task(self._update_states(deferred=deferred)).add_done_callback(_log_task_exception)
+                    self._schedule_update(deferred, key="media-noart")
 
             else:
                 self._reset_state([])
@@ -1720,7 +1770,7 @@ class KodiDevice(IKodiDevice):
                     self._update_state_retry,
                     timeout_error,
                 )
-                asyncio.create_task(self._update_states(deferred=1)).add_done_callback(_log_task_exception)
+                self._schedule_update(1, key="timeout-retry")
             else:
                 _LOG.info(
                     "[%s] Update states : timeout error : %s %s",
@@ -2321,7 +2371,7 @@ class KodiDevice(IKodiDevice):
                 await self._kodi.set_audio_stream(track.index)
                 # Kodi doesn't always fire OnPropertyChanged for stream switches, so poll
                 # fresh state ourselves and push the new CURRENT_OPTION to the Remote.
-                asyncio.create_task(self._update_states(deferred=0)).add_done_callback(_log_task_exception)
+                self._schedule_update()
                 return
         _LOG.warning("[%s] Switch audio track to %s : not found", self.device_config.address, track_name)
 
@@ -2348,7 +2398,7 @@ class KodiDevice(IKodiDevice):
                 # Kodi doesn't always fire OnPropertyChanged for stream switches
                 # (especially the showsubtitles toggle), so poll fresh state ourselves
                 # and push the new CURRENT_OPTION to the Remote.
-                asyncio.create_task(self._update_states(deferred=0)).add_done_callback(_log_task_exception)
+                self._schedule_update()
                 return
         _LOG.warning("[%s] Switch subtitle track to %s : not found", self.device_config.address, track_name)
 
