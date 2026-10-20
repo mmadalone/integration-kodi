@@ -1092,7 +1092,7 @@ This is exactly the "tried-and-tested approach" line: 4 magic-byte signatures co
 - `connect()` checks `is None or closed` before creating; idempotent across reconnects.
 - `_clear_connection()` close is guarded against `ClientError`/`OSError` so a session-close failure never prevents the rest of the reset.
 - `_artwork_session = None` after close, so a subsequent re-`connect()` recreates cleanly.
-- `_fetch_artwork_with_retry()` checks `is None or closed` defensively and returns `None` (which patch 36 handles as "omit"); shouldn't normally happen but guards against partially-torn-down state.
+- `_fetch_artwork_with_retry()` checks `is None or closed` defensively and returns `None` (which patch 36 handles as "omit"); shouldn't normally happen but guards against partially-torn-down state. **⚠️ Superseded by patch 49 (`v1.21.2-madalone.2`):** it did happen — 1,076 skipped fetches in 3 h on 2026-10-20 — and skipping left artwork dead until the next full reconnect. The fetch now recreates the session.
 
 **Breaking changes flagged:**
 - Existing configs missing `artwork_timeout_seconds` get the default 12 s on next load via dataclass coercion. No setup re-run required.
@@ -1964,3 +1964,73 @@ Carries forward the **unrun** V0-V11 from the v1.21.0 merge (that release was ta
 - X3: Press a button right after waking. It should respond without waiting for the reconnect (handler no longer blocks).
 
 **uc-intg-manager:** releasing as `1.21.2-madalone.1` makes the version numbers match upstream `v1.21.2` again, so the false "update available" badge goes away (re-checked 2026-09-23: manager v3.1.0 still resolves `kodi_driver` to albaintor's repo; `auto_update` is off).
+
+---
+
+## Patch 48: `connect()` Lock Released by a Caller That Never Held It (`v1.21.2-madalone.2`, 2026-10-20)
+
+**File:** `src/kodi_device.py` (`connect()`).
+
+**Problem (upstream bug):** the `Connect already in progress, returns` early return sits inside the `try:` whose `finally:` releases `_connect_lock`. `asyncio.Lock` does not track an owner, so that release succeeds: it frees the lock held by the attempt that is actually connecting. Any `connect()` that arrives mid-connect does this. The common case is the button press that wakes the remote: the media-player/remote command prologue calls `connect()`. The command's `@retry` path (`retry_call_command`) then sees the lock free and starts a second `connect()`. Two bodies run at once:
+- the second's `init_connection()` closes the first's aiohttp session, so the first fails with `ClientConnectionError('Connector is closed.')`;
+- a failing body's `_clear_connection(False)` tears down what the winning body just built, including the artwork session (patch 49), while leaving the websocket up.
+
+**Why it surfaced after `v1.21.2`:** the lock bug is old, but two upstream `v1.21.2` changes put the loser's cleanup on the same beat as the winner's setup. The wake loop retries every 0.5 s (`WAKE_RECONNECT_INTERVAL`), and pykodi's `CannotConnectError(*error.args)` made the 0.5 s `ERROR_OS_WAIT` in the failure path actually run. Before, the loser cleaned up at once, long before any winner existed. Measured offline on the same `kodi_device.py`: art dead after **2/21** button-press wakes with `v1.21.1` wake behaviour, **15/21** with `v1.21.2`.
+
+**Field evidence (UC3 driver log, wake at 2026-10-20 12:56:28 UTC):** `Connecting` → (button `mute_toggle`) `Connect already in progress, returns` → `Connecting` → `Connector is closed.` → `OSError 101` → `OS error, waiting 0.5s` → attempt 2 `Kodi register callbacks` (session created) → **23 ms later** the loser's `Unable to connect to Kodi via websocket` (its `_clear_connection(False)`) → `artwork session unavailable; skipping fetch` → `Connection successful`. Then 643 skipped fetches in 126 s, until the next standby. The 13:01:36 wake had no button press and fetched the La 1 logo in 70 ms. Kodi served every skipped URL with 200 in under 50 ms (PseudoTV logo, real-PVR picon, library episode), so the data side was healthy (AP-K3).
+
+**Solution:**
+1. A `lock_acquired` flag. The `finally` only releases the lock if this call acquired it. Every other side effect of the early-return path is unchanged (`_available = True` is read by `remote.py` TOGGLE; `Events.CONNECTED`; watchdog start).
+2. Re-arm `_connection_status` at the start of a real attempt (after the `Already connected` check), the same way `_ping_and_reconnect()` already does before reconnecting. **Required, not optional:** with the lock fix alone, a button pressed during a wake fails. The status future is still resolved from the previous connection, so `retry_call_command` doesn't wait; the command runs twice against the socket being opened and returns `BAD_REQUEST`. The old code only got away with it because the colliding second attempt crashed the first, and that crash path re-armed the future.
+
+**Verification (offline):** harness running the real `connect()` / `@retry` / `retry_call_command` / `disconnect()` / `_clear_connection()` / `_fetch_artwork_with_retry()` against a fake Kodi transport. It replays the field wake across Wi-Fi-up delays 0–0.6 s, a button at 0/10/30 ms, and both `_connection_status` start states (fresh device / long-running). It reproduces the field log line for line.
+
+| Variant | Lock released by non-owner | Art dead after button wake | Button press lost |
+|---|---|---|---|
+| before | 21/21 | 6–15/21 | 0–21/21 (timing-dependent) |
+| lock fix only | 0 | 0 | **21/21** (long-running state) |
+| patch 48 (lock + re-arm) | 0 | 0 | 0 |
+| patches 48 + 49 | 0 | 0 | 0 (both wake styles, both start states) |
+
+**Reference:** upstream `src/kodi_device.py` `connect()` (`upstream/main` L663-666 early return, L734-736 release). Python `asyncio.Lock.release()` checks only "is it locked", not who locked it. Candidate for the upstream PR queue.
+
+**Scope:** connection lifecycle only. No entity features, attributes, config fields or dependencies.
+
+**Breaking changes flagged:** none observable. A `connect()` that arrives mid-connect still returns `True` immediately; it just no longer unlocks the attempt in progress. A command sent during a reconnect now waits for it (the existing `retry_call_command` budget, up to 4 s) instead of racing it.
+
+---
+
+## Patch 49: Artwork Session Self-Heals (`v1.21.2-madalone.2`, 2026-10-20)
+
+**File:** `src/kodi_device.py` (new `_get_artwork_session()`; `_fetch_artwork_with_retry()`, `connect()`, `_clear_connection()`).
+
+**Problem:** patch 40 created the artwork `ClientSession` only inside `connect()`, and `_fetch_artwork_with_retry()` *skipped* the fetch when the session was missing ("should not normally happen"). Any teardown that leaves the websocket up leaves no code path that recreates the session while connected: patch 48's race, or a `connect()` body failing after its socket opened. Every artwork fetch is then skipped, for every content type, until the next full reconnect. The skip logs only at DEBUG. On 2026-10-20 this hit a PseudoTV channel (652 skips), a real-PVR channel (244) and a library episode (180) within 3 h.
+
+Each skip also counts as a fetch failure, so patches 37/42 schedule another poll 4 s later, and the watchdog starts a new chain every ~10 s. Measured: **5.1 polls/s and climbing** (3.9 → 6.1/s over 2 min) against **0.17/s** healthy. That is Kodi JSON-RPC load and remote battery, not just a missing logo.
+
+**Solution:**
+1. `_get_artwork_session()` returns the shared session, creating it if missing or closed. `connect()` uses it (same behaviour as before), and so does every fetch attempt. A missing session is recreated instead of skipped, and one closed between retry attempts is replaced.
+2. `_clear_connection()` detaches the session *before* awaiting its close. A session that a concurrent fetch creates during the close then stays referenced instead of being orphaned. Checked offline: orphaned without the detach, not with it. Same pattern as jsonrpc-websocket 4.0.0's #23.
+
+**AP-K2 trace:** the guard predicates (`_thumbnail_real_change`, `_retry_pending`) are unchanged. In the dead-session state `_retry_pending` is already true, so the next poll's fetch now succeeds. That sets `_artwork_pending_retry = False` and emits `MEDIA_IMAGE_URL`, and later ticks skip the block. This is the same path the healthy 13:01:36 field log shows: `retry_run=True, fetch_failed=False, in_updated_data=True`.
+
+**AP-K5:** first artwork-pipeline patch in this release window. The root cause is in the connection lifecycle (patch 48); this patch removes the state that made it permanent. Still latent, **not** addressed here: retry chains multiply for any *persistent* fetch failure (e.g. a stable non-placeholder 404), because every failure schedules a new deferred poll regardless of one already pending. Bounded only by `UPDATE_LOCK_TIMEOUT`. Fixing it means deduplicating the deferred retry, which is another artwork-block change; do the AP-K5 inventory first.
+
+**Breaking changes flagged:** none. Log text changed: `artwork session unavailable; skipping fetch for <url>` → `artwork session missing, recreating it` (DEBUG).
+
+---
+
+## Release `v1.21.2-madalone.2` (2026-10-20) — not yet tagged
+
+**Contents:** patches 48 + 49 on `v1.21.2-patched`. Upstream re-checked the same day: `upstream/main` is still `v1.21.2` (`5807f0e`, already merged). New and unreleased upstream: branch `number_entity` (driver 1.22.0 WIP, zoom/audio-delay number entities, 2026-10-06/07). Re-check when it ships.
+
+**Dependency pin (fork):** `jsonrpc-websocket>=3.2.1` → `~=3.2.1`. The deployed `v1.21.2-madalone.1` CI build resolved 3.2.1. Since then 3.3.0 (2026-10-05) and **4.0.0** (2026-10-15) were published, and the open range would have pulled the new major into this build unannounced. 4.0.0 is API-compatible with pykodi: `timeout` is now only the response timeout, so the websocket close-handshake timeout falls back to aiohttp's 10 s instead of 5 s. It contains reconnect-race fixes (#21 pending-call cleanup, #23 detach-before-close). Pinned so this release differs from the deployed one only by patches 48/49; evaluate 4.0.0 in its own release. Build verified: `jsonrpc-websocket-3.2.1`, `aiohttp-3.14.5` (deployed: 3.14.3, same `~=3.14.1` range).
+
+**Tooling:** `tools/diag_ws_capture.py` now reads credentials from the environment (`UC_PIN` for web-configurator Basic auth, or `UC_TOKEN`). The API key hardcoded since `bde935f` (public repo) returns HTTP 401, so it is already dead; delete it on the remote if it is still listed. Driver logs: `GET /api/system/logs?s=custom-intg-kodi_driver&p=7&limit=20000`. **Without `p=7` the endpoint returns 0 bytes** for this driver.
+
+**Validation (on device):**
+- Y1 (the bug): Kodi on live TV, remote asleep >1 min, wake it **with a button press** on the Kodi activity (volume/mute). Expected: channel logo within ~1–2 s, and the button acts. Log: no `Connector is closed.`, no `artwork session missing`.
+- Y2: repeat Y1 five times, and once while a library file plays.
+- Y3: wake by lifting the remote (no button). Logo as before.
+- Y4: 60 s `tools/diag_ws_capture.py` after deploy. Expect `media_image_url=<data URI mime='image/png' ...>` on a channel change.
+- Y5: log rate. `Update states in progress` every few seconds, never several per second.

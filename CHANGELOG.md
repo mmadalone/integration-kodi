@@ -11,6 +11,17 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
+### v1.21.2-madalone.2 — 2026-10-20 (not yet released)
+
+- **Logos and artwork no longer go missing after waking the remote with a button press (patches 48 + 49).** Pressing a button to wake the remote started a second Kodi connection that collided with the one already reconnecting. The losing one cleaned up after itself and deleted the HTTP session the integration uses to download artwork. The Kodi connection itself stayed up, so nothing recreated the session: every logo and poster (live TV, library, add-ons) was silently skipped until the remote next went to sleep and woke up cleanly. While broken, the integration also polled Kodi about 30× more often than normal (5+ times a second, rising). The root cause is an upstream locking bug that upstream `v1.21.2`'s faster wake reconnect made far more likely (offline replay: artwork lost after 2 of 21 button wakes with the old timing, 15 of 21 with the new). Fixed at the source (only the connection attempt that took the lock may release it), and the artwork session now recreates itself if it is ever missing. A button pressed during the reconnect still waits for the connection and then acts, verified in the same replay.
+- **`jsonrpc-websocket` pinned to `~=3.2.1`** so this build carries the same dependency as the release it replaces. Version 4.0.0 (published 2026-10-15) would otherwise have been pulled in silently; it is compatible but will be evaluated in its own release.
+- `tools/diag_ws_capture.py` reads credentials from the environment (`UC_PIN` or `UC_TOKEN`) instead of a hardcoded key.
+- No entity feature / attribute / stored-config changes → **no breaking changes**. ruff clean.
+
+### v1.21.2-madalone.1 — 2026-09-23
+
+Merged upstream `v1.21.2` (faster reconnect after the remote wakes). Details in `KODI-INTEGRATION-PATCHES.md` "Upstream Merge to v1.21.2".
+
 ### v1.21.1-madalone.1 — 2026-09-01
 
 **Merged upstream `v1.21.1` into the fork** (single upstream commit `a19d2e3`, "Fix empty media subtitles in browsing and bump version"). New branch `v1.21.1-patched` off `v1.21.0-madalone.1`; `src/media_browser.py` auto-merged with zero conflict, `driver.json` was the only conflict.
