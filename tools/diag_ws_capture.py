@@ -4,26 +4,38 @@ media_player entity, dump what the integration actually pushes — particularly
 MEDIA_IMAGE_URL (truncated to first 80 chars to keep terminal sane). Run while
 the user opens the activity card and starts playback.
 
-Usage: python _diag_ws_capture.py [seconds]   # default 60
+Usage: python tools/diag_ws_capture.py [seconds]   # default 60
+
+Credentials come from the environment, never from this (tracked) file:
+  UC_PIN    web-configurator PIN (HTTP Basic auth, user "web-configurator"), or
+  UC_TOKEN  a Core-API key (Bearer auth)
+Optional: UC_HOST (default 192.168.2.204), UC_KODI_ENTITY (shown in the header;
+every event mentioning the kodi_driver.main integration is printed regardless).
 """
 from __future__ import annotations
 
 import asyncio
 import base64
 import json
+import os
 import sys
 import time
 
 import websockets
 
-UC3_HOST = "192.168.2.204"
-UC3_TOKEN = "boyTP4V.MjhmNjJiZWI2YWJmNGY4NjlmZTE0MDRhYzgxY2Q1MTIuZGFmYzU3MWM5YTg5NGY0NmI1NDlhOGU2MzZhMDI4Njk"
-ENTITY = "media_player.madteevee.local"
+UC3_HOST = os.environ.get("UC_HOST", "192.168.2.204")
+UC3_PIN = os.environ.get("UC_PIN", "")
+UC3_TOKEN = os.environ.get("UC_TOKEN", "")
+ENTITY = os.environ.get("UC_KODI_ENTITY", "kodi_driver.main.media_player.192.168.2.217")
 INTEGRATION_ID = "kodi_driver.main"
 
 
 def auth_header() -> str:
-    return f"Bearer {UC3_TOKEN}"
+    if UC3_PIN:
+        return "Basic " + base64.b64encode(f"web-configurator:{UC3_PIN}".encode()).decode()
+    if UC3_TOKEN:
+        return f"Bearer {UC3_TOKEN}"
+    sys.exit("Set UC_PIN (web-configurator PIN) or UC_TOKEN (Core-API key) in the environment.")
 
 
 def short(v, n=80):
@@ -70,8 +82,9 @@ async def main(duration_s: int = 60):
         ping_timeout=None,
     ) as ws:
         print("[*] Connected. Sending auth + subscribe...")
-        # First, send an auth message in case the WS expects in-band auth
-        await ws.send(json.dumps({"kind": "req", "id": 0, "msg": "auth", "msg_data": {"token": UC3_TOKEN}}))
+        # An API key may also need in-band auth; the PIN's Basic header is enough on its own.
+        if UC3_TOKEN and not UC3_PIN:
+            await ws.send(json.dumps({"kind": "req", "id": 0, "msg": "auth", "msg_data": {"token": UC3_TOKEN}}))
 
         # UC Core API channel set per server's BAD_REQUEST hint:
         # all, configuration, entities, entity_button, entity_switch, entity_climate,

@@ -392,8 +392,9 @@ class KodiDevice(IKodiDevice):
         self._chapter_update_task: Task | None = None
         self._media_browser = media_browser.MediaBrowser(self)
         # Patch 40: shared aiohttp.ClientSession for artwork downloads (lifecycle
-        # tied to connect()/_clear_connection()). Avoids per-fetch TLS/connect
-        # overhead; aiohttp official guidance is one session per app/device.
+        # tied to connect()/_clear_connection(); patch 49: _get_artwork_session()
+        # also recreates it on demand). Avoids per-fetch TLS/connect overhead;
+        # aiohttp official guidance is one session per app/device.
         self._artwork_session: ClientSession | None = None
         self._artwork_timeout = ClientTimeout(total=float(device_config.artwork_timeout_seconds))
         # Patch 38: item-identity tuple (id, file). Used to distinguish a genuine
@@ -654,14 +655,17 @@ class KodiDevice(IKodiDevice):
             except (OSError, TransportError, AttributeError) as ex:
                 _LOG.debug("[%s] Error closing connection during clear: %s", self.device_config.address, ex)
         # Patch 40: tear down the shared artwork session alongside the Kodi
-        # connection. Recreated on next connect(). Defensive close: don't let
-        # a session-close failure propagate and prevent reset of other state.
-        if self._artwork_session is not None and not self._artwork_session.closed:
+        # connection. Recreated on next connect() or artwork fetch (patch 49).
+        # Defensive close: don't let a session-close failure propagate and
+        # prevent reset of other state.
+        # Patch 49: detach before awaiting the close, so a session that a concurrent
+        # fetch creates in the meantime stays referenced instead of being orphaned.
+        artwork_session, self._artwork_session = self._artwork_session, None
+        if artwork_session is not None and not artwork_session.closed:
             try:
-                await self._artwork_session.close()
+                await artwork_session.close()
             except (ClientError, OSError) as ex:
                 _LOG.debug("[%s] Error closing artwork session: %s", self.device_config.address, ex)
-        self._artwork_session = None
 
     async def _ping(self):
         """Send websocket ping."""
@@ -761,16 +765,28 @@ class KodiDevice(IKodiDevice):
     async def connect(self) -> bool:
         """Connect to Kodi via websocket protocol."""
         # pylint: disable = R0915
+        # Patch 48: asyncio.Lock does not track its owner, so the finally block below
+        # only releases the lock if this call acquired it. The "already in progress"
+        # return runs that finally block too, and releasing there let a second
+        # connect() start while the first was still running.
+        lock_acquired = False
         try:
             if self._connect_lock.locked():
                 _LOG.debug("[%s] Connect already in progress, returns", self.device_config.address)
                 return True
             _LOG.debug("[%s] Connecting", self.device_config.address)
             await self._connect_lock.acquire()
+            lock_acquired = True
             if self._kodi_connection and self._kodi_connection.connected:
                 _LOG.debug("[%s] Already connected", self.device_config.address)
                 return True
             self._connect_error = False
+            # Patch 48: a command sent during this attempt waits on _connection_status
+            # (retry_call_command). Left resolved by the previous connection, it would
+            # not wait and the command would fail against the socket being opened.
+            # _ping_and_reconnect() re-arms it the same way before reconnecting.
+            if not self._connection_status or self._connection_status.done():
+                self._connection_status = self.event_loop.create_future()
 
             await self.init_connection()
             # This method was buggy, this is the reason why pykodi library has been integrated into the driver
@@ -779,8 +795,7 @@ class KodiDevice(IKodiDevice):
             await self._register_callbacks()
             # Patch 40: ensure the shared artwork session is alive for this connection's
             # lifetime. Created here so the event loop is guaranteed to be running.
-            if self._artwork_session is None or self._artwork_session.closed:
-                self._artwork_session = ClientSession()
+            self._get_artwork_session()
             await self._ping()
             self._media_browser.reset_feature_cache()
             await self._update_states()
@@ -838,7 +853,7 @@ class KodiDevice(IKodiDevice):
             self._available = True
             self.events.emit(Events.CONNECTED, self.id)
             try:
-                if self._connect_lock.locked():
+                if lock_acquired and self._connect_lock.locked():
                     self._connect_lock.release()
             except RuntimeError:
                 pass
@@ -987,6 +1002,12 @@ class KodiDevice(IKodiDevice):
             return "image/gif"
         return "image/jpeg"
 
+    def _get_artwork_session(self) -> ClientSession:
+        """Patch 49: return the shared artwork session, creating it if missing or closed."""
+        if self._artwork_session is None or self._artwork_session.closed:
+            self._artwork_session = ClientSession()
+        return self._artwork_session
+
     async def _fetch_artwork_with_retry(self, url: str) -> str | None:
         """Patch 37: fetch an artwork URL with exponential-backoff retry.
 
@@ -1008,14 +1029,11 @@ class KodiDevice(IKodiDevice):
         so a watchdog-cancelled fetch leaves no resource leak.
         """
         if self._artwork_session is None or self._artwork_session.closed:
-            # Should not normally happen — connect() initialises the session — but guard
-            # against re-entry from a partially-torn-down state.
-            _LOG.debug(
-                "[%s] artwork session unavailable; skipping fetch for %s",
-                self.device_config.address,
-                url,
-            )
-            return None
+            # Patch 49: this used to skip the fetch. A teardown that leaves the websocket
+            # up (a failed concurrent connect() running _clear_connection) left nothing
+            # to recreate the session, so every fetch was skipped until the next full
+            # reconnect. The fetch below now recreates it.
+            _LOG.debug("[%s] artwork session missing, recreating it", self.device_config.address)
 
         last_err: Exception | None = None
         for attempt, delay in enumerate(ARTWORK_FETCH_RETRY_DELAYS, start=1):
@@ -1024,7 +1042,7 @@ class KodiDevice(IKodiDevice):
                 # don't synchronise. Doesn't change worst-case budget meaningfully.
                 await asyncio.sleep(delay + random.uniform(0, 0.2 * delay))  # noqa: S311
             try:
-                async with self._artwork_session.get(url, timeout=self._artwork_timeout) as resp:
+                async with self._get_artwork_session().get(url, timeout=self._artwork_timeout) as resp:
                     # Patch 29b's 200-status check, retained: Kodi returns 404 + HTML body
                     # for unresolvable image:// URIs, and we must not base64-encode the
                     # error page. Skip non-200 responses entirely so the retry loop can
