@@ -550,21 +550,26 @@ async def call_command(self, method: str, **params: Any) -> Any:
 
 ### §7.1 `asyncio.create_task` vs `await` — never fire-and-forget without observability
 
-The `_log_task_exception` helper in `src/kodi_device.py:94` is mandatory for every fire-and-forget task:
+The `_log_task_exception` helper in `src/kodi_device.py` is mandatory for every fire-and-forget task. Since patch 51 it logs the task name and the traceback:
 
 ```python
 def _log_task_exception(task: asyncio.Task) -> None:
-    """Log unhandled exceptions from background tasks; called as add_done_callback."""
+    """Log unhandled exceptions from fire-and-forget tasks."""
     if task.cancelled():
         return
-    if task.exception() is not None:
-        _LOG.error("Unhandled exception in background task: %s", task.exception())
-
-# Usage:
-asyncio.create_task(self._update_states(deferred=4)).add_done_callback(_log_task_exception)
+    exc = task.exception()
+    if exc is not None:
+        _LOG.error("Unhandled exception in background task %s: %r", task.get_name(), exc, exc_info=exc)
 ```
 
-Patch 13 introduced this; bare `asyncio.create_task(...)` without the callback silently swallows exceptions on any failure path. AP-K-20.
+**Background `_update_states` refreshes go through `self._schedule_update(deferred, key=...)`, never a bare `create_task`** (patch 51). It names and tracks the task so `disconnect()` can cancel it, and a `key` dedupes repeated requests. An untracked delayed refresh outlives standby and fires against `_kodi_connection = None`. For any other background task, keep a handle and attach the callback:
+
+```python
+task = self.event_loop.create_task(coro, name=f"kodi-something[{self.device_config.address}]")
+task.add_done_callback(_log_task_exception)
+```
+
+Patch 13 introduced the callback; bare `asyncio.create_task(...)` without it silently swallows exceptions on any failure path. AP-K-20.
 
 ### §7.2 Locks, semaphores, `asyncio.wait_for`
 

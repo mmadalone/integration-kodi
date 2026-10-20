@@ -948,7 +948,9 @@ Compounding this: the prior code path also pre-cleared `self._media_image_data =
 
 ---
 
-## Patch 37: Exponential-Backoff Retry on Artwork Fetch
+## Patch 37: Exponential-Backoff Retry on Artwork Fetch — ⚠️ SUPERSEDED by patch 50 in v1.21.2-madalone.3 (2026-10-20)
+
+> **⚠️ Superseded by patch 50.** The inline 3-attempt loop held `_update_lock` for up to ~38 s (39.6 s measured) when Kodi's web server hung, so a pause event arriving meanwhile was dropped at the 30 s lock timeout. Patch 50 makes one attempt inline and retries on a backoff schedule outside the lock. Kept for history.
 
 **File:** `src/kodi_device.py`, new method `_fetch_artwork_with_retry()`.
 
@@ -1175,7 +1177,9 @@ asyncio.create_task(
 
 ---
 
-## Patch 42: Deferred-Retry Actually Retries (post-`v1.18.13-madalone.4` hotfix)
+## Patch 42: Deferred-Retry Actually Retries (post-`v1.18.13-madalone.4` hotfix) — ⚠️ SUPERSEDED by patch 50 in v1.21.2-madalone.3 (2026-10-20)
+
+> **⚠️ Superseded by patch 50.** The flag made *every* poll re-enter the artwork block and refetch, and each failure scheduled another +4 s poll even when one was already pending, so a permanently broken image multiplied retry chains (236 image requests in 3 min for one stable 404, measured offline). Patch 50 replaces the flag with an explicit retry state object and a single retry task. Kept for history.
 
 **File:** `src/kodi_device.py`, new `_artwork_pending_retry` flag in `__init__`, gating term on the artwork block, set/clear arms in the fetch-outcome branches.
 
@@ -2034,3 +2038,84 @@ Each skip also counts as a fetch failure, so patches 37/42 schedule another poll
 - Y3: wake by lifting the remote (no button). Logo as before.
 - Y4: 60 s `tools/diag_ws_capture.py` after deploy. Expect `media_image_url=<data URI mime='image/png' ...>` on a channel change.
 - Y5: log rate. `Update states in progress` every few seconds, never several per second.
+
+---
+
+## Patch 51: Background Refresh Lifecycle (`v1.21.2-madalone.3`, 2026-10-20)
+
+**File:** `src/kodi_device.py` (`_schedule_update()`, `_cancel_background_updates()` new; `disconnect()`, `_update_states()`, `_update_position()`, `_log_task_exception()`, and the 8 call sites that created `_update_states` tasks).
+
+**Problem:** delayed refreshes were fire-and-forget tasks that nothing tracked. Examples: the connect re-poll (+3 s), media-changed-without-art (+4 s), the artwork retry (+4 s), the timeout retry (+1 s), the watchdog, Kodi events and the stream-select refreshes. `disconnect()` (remote standby) sets `_kodi_connection = None` but left them pending. When they fired, `_update_states` evaluated `self._kodi_connection.connected` on `None`, and patch 13's logger printed `Unhandled exception in background task: 'NoneType' object has no attribute 'connected'`. That was 4–6 ERROR lines per sleep in the 2026-10-20 field log, with no task name and no traceback. Tasks that fired just after a wake also ran `_reset_state()` in the middle of the new connect.
+
+**Solution:**
+1. `_schedule_update(deferred=0, *, key=None)`: every background `_update_states` refresh goes through it. It names the task (`kodi-update[addr]+Ns:key`), tracks it, and with a `key` drops a duplicate request while the first is pending. A keyed task may still reschedule itself, as the timeout retry does. Keys: `connect-repoll`, `media-noart`, `timeout-retry`.
+2. `disconnect()` → `_cancel_background_updates()`: cancels every tracked refresh, the artwork retry task (patch 50), and the chapter and position timers. The position timer is set to `None` so `connect()` recreates it. This is safe because `_update_states` releases `_update_lock` in its `finally`.
+3. `_update_states()` and `_update_position()` treat `_kodi_connection is None` as not connected. Upstream has the identical bug.
+4. `_log_task_exception` logs the task name, the `repr` of the exception, and the traceback. `driver.py` imports it, so its tasks benefit too.
+
+**Verification (offline):** unit checks on the real `KodiDevice`: keyed dedupe, self-rescheduling retry chain, cancel-on-disconnect, None guard, named error. Harness scenario K-E (sleep with refreshes and a retry pending): madalone.2 logs 2 `NoneType` errors and makes 1 image request after the sleep; madalone.3 logs 0 errors, makes 0 requests and runs 0 polls.
+
+**Scope:** task lifecycle only. One call site (`power_off`) still awaits `create_task(self._update_states())` inline; it is not a background task and was left as is.
+
+**Breaking changes flagged:** none.
+
+---
+
+## Patch 50: Artwork Retry State Machine (`v1.21.2-madalone.3`, 2026-10-20)
+
+**Files:** new `src/artwork_retry.py` (fork-only, pure logic: `FetchOutcome`, `FetchResult`, `ArtworkRetry`); `src/kodi_device.py` (`_fetch_artwork_once()` replaces `_fetch_artwork_with_retry()`; new `_artwork_retry_loop()`, `_start/_cancel/_resume_artwork_retry()`, `_artwork_retry_wanted()`; artwork block in `_update_states`; `on_stop`; no-players branch; `connect()`).
+
+**Problem (patches 37 + 42 together):** after one failed download, patch 42's flag made **every** `_update_states` re-enter the artwork block and refetch: watchdog ticks, Kodi events and button presses. Each failure also scheduled another +4 s poll, even if one was already pending, so retry chains multiplied for as long as the image stayed broken. Each fetch ran patch 37's 3 inline attempts (0 / 0.5 / 1.5 s) **while holding `_update_lock`**. That held the lock ~2 s for a 404 and ~38 s when Kodi's web server hung. Title and play/pause refreshes queue on that lock and give up after `UPDATE_LOCK_TIMEOUT` (30 s). A 404 and a timeout looked identical, so a permanently missing image was retried forever.
+
+**Solution:**
+1. `_fetch_artwork_once()` makes one attempt. It returns a `FetchResult` whose outcome is OK, NOT_FOUND (HTTP 4xx: missing image, bad credentials) or TRANSIENT (timeout, connection error, 5xx, empty body). It reuses `_get_artwork_session()` (patch 49) and `_sniff_mime()` (patch 39).
+2. The artwork block runs **only on a genuine thumbnail change** (patch 38 semantics unchanged). Patch 42's `_retry_pending` guard term and `_artwork_pending_retry` flag are gone (STYLE_GUIDE §7.4: explicit state object instead of another flag). It makes one attempt inline, so title and logo still go out in the same UPDATE when it works. On failure the image is omitted (patch 36) and the retry task starts.
+3. `_artwork_retry_loop(url, delay)` is a single task per device that follows `ArtworkRetry`'s schedule:
+   - TRANSIENT: 0.5, 1.5, 4, 8, 16, 32 s, then every 60 s while the item plays.
+   - NOT_FOUND: 0.5, 1.5 s, then give up. One WARNING per URL; a 401 adds a credentials hint.
+   - Jitter: up to +20%, as in patch 37.
+   - It sleeps **outside** `_update_lock` and holds the lock for one request at a time.
+   - Before applying a result it re-checks that `url` is still the wanted one, so stale results are discarded.
+4. Cancel and reset points:
+   - A real thumbnail change cancels and resets.
+   - The no-art path, URL mode, `on_stop` (newly covered) and the no-players branch (patch 43) cancel and reset.
+   - `disconnect()` cancels but keeps the schedule.
+   - A successful `connect()` resumes an unresolved download with a fresh budget (`_resume_artwork_retry`). That also gives a given-up 404 one more chance per reconnect.
+5. `ARTWORK_FETCH_RETRY_DELAYS` is removed and `ARTWORK_RESUME_DELAY = 0.5` added. `UPDATE_LOCK_TIMEOUT` keeps patch 40's 30 s.
+
+**AP-K2 walk (verified by harness):**
+- Inline success → later ticks skip the block.
+- Inline failure → ticks skip the block; only the loop retries, so there is no double fetch.
+- URL change mid-retry → the old task is cancelled (`finally` frees the lock) and a fresh start runs. K-D: after a zap no stale logo is emitted, even when the old URL starts answering.
+- Patches 36/38/41/43/44/49 interactions are unchanged.
+
+**Verification (offline harness v2):** real `_update_states` / `connect` / `disconnect` / artwork code against a fake Kodi JSON-RPC and a scripted image server, madalone.2 vs madalone.3.
+
+| Scenario | madalone.2 | madalone.3 |
+|---|---|---|
+| K-A stable 404, 3 min | 236 image requests, 79 polls, 80 warnings | **3** requests, 21 polls, **1** warning |
+| K-B 500 for 20 s, then OK | 27 requests; logo 1.2 s after recovery | **6** requests; logo **12.8 s** after recovery (trade-off) |
+| K-C web server hangs, pause arrives | max lock hold **39.6 s**; pause refresh **dropped** at 30 s | max hold **12.6 s**; pause refresh ran after 11.6 s |
+| K-D zap during retries | no stale logo | no stale logo |
+| K-F normal success | title + logo in one UPDATE | title + logo in one UPDATE |
+| K-H logo fixed while asleep | shown 0.1 s after wake | shown 0.6 s after wake |
+| K-G wake race (patch 48 harness) | — | still 0 / 0 / 0 |
+
+**Trade-off (K-B):** backoff means a logo that recovers after a short outage appears at the next scheduled retry rather than on the next poll. The worst case after a long outage is ~72 s (60 s cap + jitter). The old speed came from roughly 4× the request rate.
+
+**Reference:** STYLE_GUIDE §7.4 (shared state and gating predicates), CLAUDE.md AP-K2 / AP-K5. Supersedes patches 37 (inline loop) and 42 (flag).
+
+**Breaking changes flagged:** none observable. Log text changed: the per-cycle WARNING `artwork fetch exhausted 3 retries` is replaced by one WARNING per URL on give-up (`artwork unavailable (HTTP 404) for …`), and the DEBUG `artwork emit` line drops `retry_run`.
+
+---
+
+## Release `v1.21.2-madalone.3` (2026-10-20) — not yet tagged
+
+**Contents:** patches 50 + 51 on top of madalone.2 (48 + 49). Commits `54f237f` / `ccb65c4` (madalone.2 code/docs), `fb7db58` (51), `cf52253` (50), plus docs. Dependency set unchanged from madalone.2 (`jsonrpc-websocket~=3.2.1`).
+
+**Validation (on device):**
+- Y1 (madalone.2, still pending): wake the remote **with a button press** during live TV. Logo within ~1–2 s, button acts.
+- Z1: let the remote sleep and wake it. The driver log (`p=7`) shows no `Unhandled exception in background task`.
+- Z2: zap through several channels. Each logo appears; no logo from a previous channel shows up afterwards.
+- Z3 (optional): play a channel without a logo. Expect one `artwork unavailable (…)` WARNING and no repeated fetches.
+- Z4: 60 s `tools/diag_ws_capture.py` (UC_PIN env). `media_image_url=<data URI mime='image/png' …>` on channel changes; `Update states in progress` every few seconds, never several per second.

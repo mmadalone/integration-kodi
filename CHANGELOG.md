@@ -11,6 +11,15 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
+### v1.21.2-madalone.3 — 2026-10-20 (not yet released)
+
+- **A broken logo no longer makes the integration hammer Kodi or lag (patch 50).** When a channel logo or poster failed to download, the integration retried it on every refresh, and each failure scheduled yet another retry, so the retries multiplied for as long as the image stayed broken. Each attempt also blocked the integration's state updates for up to ~40 s if Kodi's web server hung, long enough for a pause or play event to be dropped. Now there is one retry task per Kodi. It backs off (0.5 s up to once a minute), gives up on images Kodi reports as missing until the channel or file changes, and never blocks other updates while it waits. Measured offline against the previous release:
+  - a permanently missing logo: 236 download attempts in 3 minutes → 3
+  - a hung web server: a pause event is no longer lost
+  - trade-off: after a short web-server outage the logo comes back at the next scheduled retry (about 13 s in a 20 s test) rather than almost immediately
+- **No more error lines every time the remote sleeps (patch 51).** Refreshes that were still scheduled when the remote went to sleep fired against a connection that no longer existed and logged `'NoneType' object has no attribute 'connected'`, 4–6 times per sleep. They are now cancelled when the remote sleeps. Error messages from background tasks also say which task failed, with a traceback.
+- No entity feature / attribute / stored-config / dependency changes → **no breaking changes**. ruff clean.
+
 ### v1.21.2-madalone.2 — 2026-10-20 (not yet released)
 
 - **Logos and artwork no longer go missing after waking the remote with a button press (patches 48 + 49).** Pressing a button to wake the remote started a second Kodi connection that collided with the one already reconnecting. The losing one cleaned up after itself and deleted the HTTP session the integration uses to download artwork. The Kodi connection itself stayed up, so nothing recreated the session: every logo and poster (live TV, library, add-ons) was silently skipped until the remote next went to sleep and woke up cleanly. While broken, the integration also polled Kodi about 30× more often than normal (5+ times a second, rising). The root cause is an upstream locking bug that upstream `v1.21.2`'s faster wake reconnect made far more likely (offline replay: artwork lost after 2 of 21 button wakes with the old timing, 15 of 21 with the new). Fixed at the source (only the connection attempt that took the lock may release it), and the artwork session now recreates itself if it is ever missing. A button pressed during the reconnect still waits for the connection and then acts, verified in the same replay.
