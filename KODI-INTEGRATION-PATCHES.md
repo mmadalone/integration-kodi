@@ -2170,3 +2170,45 @@ Regression harnesses unchanged: wake race 0 / 0 / 0, patch 51 checks 5/5, K-F an
   - The title is re-sent every ~10 s even when unchanged. That is upstream's `show_stream_name` restore, debounced 5 s at `_display_temporary_title`. It happens at the same rate on madalone.2 and .3, so it is not a regression.
 - **Kodi itself went away for ~40 s** at 12:59:08–12:59:46 UTC. The keep-alive failed, then port 9090 refused connections; no command preceded it. The watchdog reconnected on its 4th retry (`retry 4 / 30`). The cause was on the Kodi host, a restart of Kodi or the box, not the integration.
 - Still to come: a day of normal use, then the tag.
+
+## jsonrpc-websocket 4.0.0 evaluation (2026-10-21)
+
+**Question:** can the fork move from the pinned `jsonrpc-websocket~=3.2.1` to 4.0.0 (released 2026-10-15)?
+
+**Verdict: yes.** Do it in a release of its own, after `v1.21.2-madalone.4` is tagged.
+
+**What changed (source diff of the single module, 3.2.1 → 4.0.0):**
+- **Timeout handling.**
+  - In 3.2.1, a `timeout` given to `Server(...)` was the response timeout *and* was passed on to aiohttp's `ws_connect()`. aiohttp treats a float there as the close-handshake timeout and emits `DeprecationWarning: parameter 'timeout' of type 'float' is deprecated, please use 'timeout=ClientWSTimeout(ws_close=...)'`. A future aiohttp may drop it.
+  - In 4.0, `timeout` is keyword-only and governs only the response wait. aiohttp's close timeout falls back to its default of 10 s.
+- **Request bookkeeping.**
+  - A request is registered before it is sent. In 3.2.1, a reply arriving first raised `KeyError` in the read loop and closed the connection.
+  - Pending entries are removed in a `finally`, so timeouts no longer leak them.
+  - A reply for an unknown id is ignored.
+- **Connection lifecycle.**
+  - The read loop is bound to its own client. An old loop's cleanup can no longer close a connection opened after a reconnect.
+  - `close()` detaches the client and session before awaiting their close, so `connected` is false at once.
+- **API.**
+  - `ws_connect(**kwargs)` accepts per-call aiohttp arguments.
+  - New dependency `multidict>=4.5`; aiohttp already requires it.
+
+**Our use:** pykodi only calls the public API: `Server(ws_url, timeout=8.0, session=…, auth=…)`, `ws_connect()`, `close()`, `connected`. No private attribute of the library is used anywhere in `src/`.
+
+**Tests:** script `ws_compare.py`, kept outside the repo. Both versions ran through the fork's own pykodi, with the connection built exactly as `kodi_device.py` builds it, in two otherwise identical environments (aiohttp 3.14.5, jsonrpc-base 2.2.0).
+
+| Test | 3.2.1 | 4.0.0 |
+|---|---|---|
+| R1 real Kodi 21.3: connect, `JSONRPC.Ping`, `Application.GetProperties`, `Player.GetActivePlayers` (read-only) | 4 ms, all answered | 6 ms, all answered |
+| R2 100 concurrent requests | 100/100, still connected | 100/100, still connected |
+| R3 20 close/connect cycles | 4–25 ms, 0 failures | 3–18 ms, 0 failures |
+| F1 Kodi exits (server closes), then reconnect | works | works |
+| F2 reconnect while `close()` waits for an unanswered close handshake | the new connection survives | the same |
+| F3 handshake never answered, `wait_for(connect(), 5)` (patch 52) | `CannotConnectError` after 5.01 s, then reconnects | the same |
+| F4 request that is never answered | `TransportError` after 8.00 s | after 8.01 s |
+| F5 `close()` with an unanswered close handshake | returns at once | the same |
+
+F1–F5 ran against a minimal RFC 6455 server written into the script.
+
+F2 found no orphaned connection with either version. pykodi's `connect()` cancels the previous read loop before reconnecting, and that ends the slow close early. So 4.0's lifecycle fixes are a safety net here rather than a needed fix.
+
+**Side finding:** the scratch environment used for the patch 48–52 harnesses had 4.0.0 installed, while the shipped build uses 3.2.1. The harnesses replace pykodi's connection with fakes, so none of them exercised this library, and their results hold for both versions. Before trusting a harness, check that its environment matches the pins.

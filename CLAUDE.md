@@ -138,6 +138,12 @@ Corrected 2026-09-01 by live source read + device probe (supersedes the 2026-08-
 - It picks the **first asset whose name contains `.tar.gz`** — keep one tarball per release. The hash file is never verified. (Upstream ships two `.tar.gz` assets on v1.21.1, so an accidental upstream install grabs the timestamped dev build.)
 - **No user-facing "add custom repo" feature** (registry URL is hard-coded in `const.py:340-345`; `UC_KNOWN_INTEGRATIONS_URL` is a dev hook and is not settable for a driver installed on the remote).
 - **The proper fix is upstream in the manager**, and the code for it already exists there: `integration_service.py:196` calls `get_driver(driver_id)` (the *detail* endpoint) and `:225` reads `home_page` — but that whole module is dead code. An issue/PR asking for `_get_installed_integrations` to use the detail endpoint, and for the manager to stop substituting a registry `repository` for a `driver_id` the registry does not own, would fix this for **every** fork that keeps its parent's `driver_id`. Note the asymmetry that hides the bug: `:1294-1296` gives `developer` a `developer_name` fallback; `:1297` gives `home_page` none.
+- **Re-checked 2026-10-21 against manager v3.2.2, the latest release, which the remote runs: still present.**
+  - In `web_server.py`, `:1341` reads the drivers list. `:1357` takes `home_page` from the missing `developer.url`. `:1369-1385` then substitutes the registry `repository`. The same pattern is repeated at `:1473-1485`.
+  - Live `GET :9999/api/v1/versions` showed `kodi_driver` current `1.21.2-madalone.4` vs latest **`v1.21.2`**, and `broadlink_driver` current `1.3.0-madalone.2` vs latest **`v1.3.0`**, both the upstream tags. There is no badge only because the numeric cores tie.
+  - **Second gap:** `github_api.py:70 compare_versions_for_update` uses PEP 440. `-madalone.N` is not valid PEP 440, so it falls back to comparing numeric cores. Even with the repository fixed, a fork's own point release (`-madalone.5` over `-madalone.4`) would never be offered.
+  - A full fix needs both: the driver's own `home_page` (detail endpoint), and ordering a `-<label>.<N>` suffix, for example as a PEP 440 local version `+<label>.<N>`.
+  - `auto_update` was confirmed `false`.
 
 ### Revert to upstream
 
@@ -250,7 +256,7 @@ UC Remote button press
 
 ### Key Dependencies
 - `ucapi` 0.7.0 -- UC integration API (pulled from PyPI; **no local wheel** — the old `src/ucapi-*.whl` note was stale)
-- `jsonrpc-async` / `jsonrpc-websocket` 3.2.1 -- Kodi JSON-RPC communication. `jsonrpc-websocket` pinned `~=3.2.1` since `v1.21.2-madalone.2`: upstream's open `>=3.2.1` would silently pull 4.0.0 (2026-10-15, API-compatible but changes timeout semantics) into any rebuild
+- `jsonrpc-async` / `jsonrpc-websocket` 3.2.1 -- Kodi JSON-RPC communication. `jsonrpc-websocket` pinned `~=3.2.1` since `v1.21.2-madalone.2`: upstream's open `>=3.2.1` would silently pull 4.0.0 (2026-10-15) into any rebuild. **4.0.0 was evaluated on 2026-10-21: safe to adopt.** It is API-compatible with our pykodi, gave the same results as 3.2.1 against the real Kodi and in the failure cases, keeps the 8 s reply timeout, and stops passing aiohttp a deprecated float `timeout`. Details are in `KODI-INTEGRATION-PATCHES.md` "jsonrpc-websocket 4.0.0 evaluation". Switch the pin in a release of its own, not mixed into one that is being validated
 - `aiohttp` 3.14 -- async HTTP
 - `zeroconf` 0.150 -- mDNS discovery
 - `pyee` -- event emitter
