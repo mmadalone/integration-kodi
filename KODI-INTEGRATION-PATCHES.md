@@ -2219,3 +2219,32 @@ F1–F5 ran against a minimal RFC 6455 server written into the script.
 F2 found no orphaned connection with either version. pykodi's `connect()` cancels the previous read loop before reconnecting, and that ends the slow close early. So 4.0's lifecycle fixes are a safety net here rather than a needed fix.
 
 **Side finding:** the scratch environment used for the patch 48–52 harnesses had 4.0.0 installed, while the shipped build uses 3.2.1. The harnesses replace pykodi's connection with fakes, so none of them exercised this library, and their results hold for both versions. Before trusting a harness, check that its environment matches the pins.
+
+## Release `v1.21.2-madalone.5` (prepared 2026-10-21) — not yet tagged
+
+**Contents:** the only change is `requirements.txt` `jsonrpc-websocket~=3.2.1` → `~=4.0.0`, prepared on the local branch `jsonrpc-websocket-4`. It goes out only after `v1.21.2-madalone.4` is tagged, so each release changes one thing. At release time: rebase onto the tagged `v1.21.2-patched`, set `driver.json` `release_date`, build, install, a day of use, then tag.
+
+**Why:** see "jsonrpc-websocket 4.0.0 evaluation" above. 4.0 fixes connection-lifecycle races and stops passing aiohttp a deprecated float `timeout`.
+
+**Pre-release checks (2026-10-21):**
+- **Install:** a fresh install from the new requirements resolves to jsonrpc-websocket 4.0.0 (with multidict 7.1.0, async-timeout 5.0.1, aiohttp 3.14.5), and `pip check` is clean.
+- **`ws_compare.py`:** results identical to 3.2.1, against the real Kodi and the fake server.
+- **`dev_real.py`:** the fork's own `KodiDevice` against the real Kodi 21.3 while it played live TV, on both versions. The test is read-only: connect, read state, 5 disconnect/connect cycles, 25 s of watchdog.
+
+| Check | 3.2.1 | 4.0.0 |
+|---|---|---|
+| D1 connect, state and title | 24 ms, `PLAYING`, title correct | 30 ms, the same |
+| D2 5 disconnect/connect cycles | 16–31 ms, all connected | 12–25 ms, all connected |
+| D3 25 s of watchdog | connected | connected |
+| D4 warnings/errors logged | 0 | 0 |
+
+- **Trial build** in `r2-pyinstaller:3.11.13-0.4.0` (docker exit 0):
+  - It installed jsonrpc-websocket 4.0.0, aiohttp 3.14.5, jsonrpc-base 2.2.0, jsonrpc-async 2.1.3 and ucapi 0.7.0.
+  - The bundled `jsonrpc_websocket.jsonrpc` contains `CIMultiDict`, which exists only in 4.0. `multidict` is bundled.
+  - The `bin/` file list is identical to the madalone.4 tarball (108 files).
+  - `ruff check` and `ruff format --check` are clean (no code changed).
+
+**Validation (on device), after installing:**
+- The madalone.4 checks again: P1, a button-press wake that leaves Kodi disconnected no more than ~6 s, and Z1–Z4.
+- **Q1:** no `Transport Error` / `Websocket error detected` lines in a day of normal use.
+- **Q2:** if Kodi drops or restarts, as on 2026-10-21 at 12:59 UTC, the integration reconnects by itself.

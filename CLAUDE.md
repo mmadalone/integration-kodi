@@ -13,6 +13,7 @@ Patched fork of [albaintor/integration-kodi](https://github.com/albaintor/integr
 - **Installed on the UC3:** `v1.21.2-madalone.4` (patches 48–52), manual upload 2026-10-21 09:10 UTC. On-device checks passed the same day: P1, Z1, Z2 and Z4 (see `KODI-INTEGRATION-PATCHES.md` "Release v1.21.2-madalone.4"). Before it, madalone.3 ran overnight: 29 wakes, all connected, 13/13 logos, 0 sleep-time errors.
 - madalone.4 adds patch 52, the bounded websocket handshake, after a 2-minute connect hang seen once on madalone.2.
 - Released after a day of use on the device: 25 wakes all reconnected, 5/5 presses during a reconnect acted, 20 logos, no errors. Tag only versions meant as releases: CI publishes a GitHub release for every tag.
+- **Next, `v1.21.2-madalone.5`:** a dependency change only, `jsonrpc-websocket` 3.2.1 → 4.0.0, on the branch `jsonrpc-websocket-4`, rebased onto the madalone.4 release (2026-10-22). Remaining steps: set `release_date`, build, install, a day of use, then tag. Checks are in `KODI-INTEGRATION-PATCHES.md` "Release v1.21.2-madalone.5".
 - Older checklists still unrun: X1-X3 (v1.21.2 merge), W1-W7 (v1.21.1), V0-V11 (v1.21.0).
 **Language:** Python 3.11 (async/await, `ucapi` 0.7.0, `aiohttp` 3.14, Kodi JSON-RPC)
 **Build toolchain:** `docker.io/unfoldedcircle/r2-pyinstaller:3.11.13-0.4.0`
@@ -256,7 +257,7 @@ UC Remote button press
 
 ### Key Dependencies
 - `ucapi` 0.7.0 -- UC integration API (pulled from PyPI; **no local wheel** — the old `src/ucapi-*.whl` note was stale)
-- `jsonrpc-async` / `jsonrpc-websocket` 3.2.1 -- Kodi JSON-RPC communication. `jsonrpc-websocket` pinned `~=3.2.1` since `v1.21.2-madalone.2`: upstream's open `>=3.2.1` would silently pull 4.0.0 (2026-10-15) into any rebuild. **4.0.0 was evaluated on 2026-10-21: safe to adopt.** It is API-compatible with our pykodi, gave the same results as 3.2.1 against the real Kodi and in the failure cases, keeps the 8 s reply timeout, and stops passing aiohttp a deprecated float `timeout`. Details are in `KODI-INTEGRATION-PATCHES.md` "jsonrpc-websocket 4.0.0 evaluation". Switch the pin in a release of its own, not mixed into one that is being validated
+- `jsonrpc-async` / `jsonrpc-websocket` 4.0.0 (pinned `~=4.0.0` since `v1.21.2-madalone.5`) -- Kodi JSON-RPC communication. Before that, `jsonrpc-websocket` was pinned `~=3.2.1` from `v1.21.2-madalone.2`: upstream's open `>=3.2.1` would silently pull 4.0.0 (2026-10-15) into any rebuild. **4.0.0 was evaluated on 2026-10-21: safe to adopt.** It is API-compatible with our pykodi, gave the same results as 3.2.1 against the real Kodi and in the failure cases, keeps the 8 s reply timeout, and stops passing aiohttp a deprecated float `timeout`. Details are in `KODI-INTEGRATION-PATCHES.md` "jsonrpc-websocket 4.0.0 evaluation". Switch the pin in a release of its own, not mixed into one that is being validated
 - `aiohttp` 3.14 -- async HTTP
 - `zeroconf` 0.150 -- mDNS discovery
 - `pyee` -- event emitter
