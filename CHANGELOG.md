@@ -11,6 +11,11 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
+### v1.21.2-madalone.4 — 2026-10-21 (not yet released)
+
+- **Kodi can no longer stay disconnected for minutes after a wake (patch 52).** Once, the button press that woke the remote started a connection whose handshake never got an answer, because the remote's Wi-Fi was still coming up. With nothing to time it out, every later reconnect waited behind it, and Kodi stayed disconnected for over two minutes. The handshake is now limited to 5 seconds, after which the next retry connects (about 5 s in total in an offline replay).
+- madalone.3 in the field overnight: 29 wakes, all reconnected, every logo downloaded, no errors after sleep.
+
 ### v1.21.2-madalone.3 — 2026-10-20 (not yet released)
 
 - **A broken logo no longer makes the integration hammer Kodi or lag (patch 50).** When a channel logo or poster failed to download, the integration retried it on every refresh, and each failure scheduled yet another retry, so the retries multiplied for as long as the image stayed broken. Each attempt also blocked the integration's state updates for up to ~40 s if Kodi's web server hung, long enough for a pause or play event to be dropped. Now there is one retry task per Kodi. It backs off (0.5 s up to once a minute), gives up on images Kodi reports as missing until the channel or file changes, and never blocks other updates while it waits. Measured offline against the previous release:

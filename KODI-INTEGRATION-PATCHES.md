@@ -2119,3 +2119,44 @@ Each skip also counts as a fetch failure, so patches 37/42 schedule another poll
 - Z2: zap through several channels. Each logo appears; no logo from a previous channel shows up afterwards.
 - Z3 (optional): play a channel without a logo. Expect one `artwork unavailable (…)` WARNING and no repeated fetches.
 - Z4: 60 s `tools/diag_ws_capture.py` (UC_PIN env). `media_image_url=<data URI mime='image/png' …>` on channel changes; `Update states in progress` every few seconds, never several per second.
+
+---
+
+## Patch 52: Bounded Websocket Handshake (`v1.21.2-madalone.4`, 2026-10-21)
+
+**File:** `src/kodi_device.py` (`connect()`, new constant `WS_CONNECT_TIMEOUT = 5.0`).
+
+**Problem:** `connect()` awaited `self._kodi_connection.connect()` with no time limit of its own. The only bound was aiohttp's session default (5-minute total). Field log 2026-10-20 15:39:09 UTC, on madalone.2:
+- The `home` press that woke the Remote started a connect whose websocket handshake never completed: a reply was lost while the Remote's Wi-Fi was coming back.
+- All 10 wake retries and every watchdog retry (15:39:20 … 15:40:34) returned `Connect already in progress`.
+- Kodi stayed disconnected until the driver was replaced at 15:41:11, two minutes later.
+
+Before patch 48, a colliding second `connect()` would close the hung attempt's session (`Connector is closed.`). That was an accidental escape hatch, removed when patch 48 made the lock owner-only. madalone.3 has the same unbounded call; it didn't recur in 29 wakes overnight, but nothing prevented it.
+
+**Solution:** `asyncio.wait_for(self._kodi_connection.connect(), timeout=WS_CONNECT_TIMEOUT)`. pykodi's `KodiWSConnection.connect()` catches the cancellation and raises `CannotConnectError`. A `TimeoutError` that does propagate is converted to `CannotConnectError("Websocket handshake timed out")`. Either way the attempt takes the normal failure path: `_clear_connection(False)`, lock released, `_connection_status` left pending for waiting commands. The next wake retry (0.5 s) or watchdog tick then connects. On the LAN a handshake takes milliseconds, so 5 s is generous.
+
+**Verification (offline replay, real `connect()` / `@retry` path; the first handshake after the wake hangs until cancelled and converts it the way pykodi does):**
+
+| | madalone.3 | patch 52 |
+|---|---|---|
+| Kodi connected | not within 20 s | 5.1 s |
+| `home` press that started the hung attempt | executed at 30 s, only because the test cancelled the attempt (field: up to 5 min) | executed at 5.05 s, `OK` |
+
+Regression harnesses unchanged: wake race 0 / 0 / 0, patch 51 checks 5/5, K-F and K-H as before.
+
+**Breaking changes flagged:** none. A handshake that genuinely needs more than 5 s now fails and is retried instead of waiting.
+
+---
+
+## Release `v1.21.2-madalone.4` (2026-10-21) — not yet tagged
+
+**Contents:** patch 52 on top of madalone.3 (`24eff9d`).
+
+**madalone.3 field results** (installed 2026-10-20 15:41 UTC; driver log `p=7` through 2026-10-21 07:29 UTC):
+- 29 wakes, 30 successful connections.
+- In 10 cases a press arrived during the reconnect and took the patch-48 path (`Connect already in progress`); every first press after a wake was answered 200.
+- 13 artwork downloads OK, 0 failed.
+- 0 `Unhandled exception in background task`, 0 `Connector is closed.`, 0 `artwork session missing`.
+- This covers Y1 (button-press wake) and Z1 (no errors after sleep/wake) of the madalone.2/.3 checklists.
+
+**Validation (on device):** Z2–Z4 from madalone.3 still apply. New: P1, a wake with a button press should never leave Kodi disconnected for more than ~6 s. In the log, a hung handshake now shows `Websocket handshake timed out` or a pykodi `Kodi connection error`, followed within a second by `Connection successful`.
