@@ -2161,3 +2161,12 @@ Regression harnesses unchanged: wake race 0 / 0 / 0, patch 51 checks 5/5, K-F an
 - This covers Y1 (button-press wake) and Z1 (no errors after sleep/wake) of the madalone.2/.3 checklists.
 
 **Validation (on device):** Z2–Z4 from madalone.3 still apply. New: P1, a wake with a button press should never leave Kodi disconnected for more than ~6 s. In the log, a hung handshake now shows `Websocket handshake timed out` or a pykodi `Kodi connection error`, followed within a second by `Connection successful`.
+
+**On-device results** (installed 2026-10-21 09:10 UTC by manual upload; driver log `p=7`):
+- **P1:** a `volume_up` press woke the Remote at 09:29:56. Kodi reconnected 1.1 s later, and the press (request 354) was answered 200 after 1.15 s.
+- **Z1:** no `Unhandled exception` and no other warning or error across that sleep and wake.
+- **Z2:** four channel changes; every logo arrived on the first download, 0.08–0.83 s after the press.
+- **Z4:** the refresh ran every 9.9 s on average (7–12 s), the watchdog's normal jittered interval. A 60 s websocket capture showed only position and title updates.
+  - The title is re-sent every ~10 s even when unchanged. That is upstream's `show_stream_name` restore, debounced 5 s at `_display_temporary_title`. It happens at the same rate on madalone.2 and .3, so it is not a regression.
+- **Kodi itself went away for ~40 s** at 12:59:08–12:59:46 UTC. The keep-alive failed, then port 9090 refused connections; no command preceded it. The watchdog reconnected on its 4th retry (`retry 4 / 30`). The cause was on the Kodi host, a restart of Kodi or the box, not the integration.
+- Still to come: a day of normal use, then the tag.
