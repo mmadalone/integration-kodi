@@ -69,6 +69,9 @@ _R = TypeVar("_R", bound=ucapi.StatusCodes)
 _LOG = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 8.0
+# Patch 52: upper bound for the websocket handshake inside connect(). On the LAN it takes
+# milliseconds; without a bound only aiohttp's 5-minute session timeout applies.
+WS_CONNECT_TIMEOUT = 5.0
 # Patch 40: ARTWORK_TIMEOUT is now a fallback / lower bound only; the per-device value
 # comes from KodiConfigDevice.artwork_timeout_seconds (default 12s, range 5-60s) and is
 # applied via aiohttp.ClientTimeout(total=…) in _fetch_artwork_once. The constant
@@ -801,7 +804,14 @@ class KodiDevice(IKodiDevice):
             await self.init_connection()
             # This method was buggy, this is the reason why pykodi library has been integrated into the driver
             # TODO report the fix
-            await self._kodi_connection.connect()
+            # Patch 52: bound the handshake. A reply lost while the Remote's Wi-Fi came back
+            # hung connect() for minutes (2026-10-20 15:39), and since patch 48 made the
+            # lock owner-only every retry waited behind it. pykodi turns the cancellation
+            # into CannotConnectError, which the handler below treats like any failed attempt.
+            try:
+                await asyncio.wait_for(self._kodi_connection.connect(), timeout=WS_CONNECT_TIMEOUT)
+            except asyncio.TimeoutError as ex:
+                raise CannotConnectError("Websocket handshake timed out") from ex
             await self._register_callbacks()
             # Patch 40: ensure the shared artwork session is alive for this connection's
             # lifetime. Created here so the event loop is guaranteed to be running.
