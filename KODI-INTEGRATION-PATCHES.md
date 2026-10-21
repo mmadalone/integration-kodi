@@ -2154,7 +2154,8 @@ Regression harnesses unchanged: wake race 0 / 0 / 0, patch 51 checks 5/5, K-F an
 
 **madalone.3 field results** (installed 2026-10-20 15:41 UTC; driver log `p=7` through 2026-10-21 07:29 UTC):
 - 29 wakes, 30 successful connections.
-- In 10 cases a press arrived during the reconnect and took the patch-48 path (`Connect already in progress`); every first press after a wake was answered 200.
+- On 15 of the 29 wakes the first button press arrived before Kodi had reconnected. Patch 48 held each press until the connection was up, and all 15 were answered 200 within 0.00–0.96 s.
+- For comparison, the only madalone.2 wake in the same log (15:39:09) is the patch 52 incident: its `home` press never got a response.
 - 13 artwork downloads OK, 0 failed.
 - 0 `Unhandled exception in background task`, 0 `Connector is closed.`, 0 `artwork session missing`.
 - This covers Y1 (button-press wake) and Z1 (no errors after sleep/wake) of the madalone.2/.3 checklists.
