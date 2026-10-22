@@ -2024,7 +2024,7 @@ Each skip also counts as a fetch failure, so patches 37/42 schedule another poll
 
 ---
 
-## Release `v1.21.2-madalone.2` (2026-10-20) — not yet tagged
+## Release `v1.21.2-madalone.2` (2026-10-20) — not released separately (rolled into `v1.21.2-madalone.4`)
 
 **Contents:** patches 48 + 49 on `v1.21.2-patched`. Upstream re-checked the same day: `upstream/main` is still `v1.21.2` (`5807f0e`, already merged). New and unreleased upstream: branch `number_entity` (driver 1.22.0 WIP, zoom/audio-delay number entities, 2026-10-06/07). Re-check when it ships.
 
@@ -2109,7 +2109,7 @@ Each skip also counts as a fetch failure, so patches 37/42 schedule another poll
 
 ---
 
-## Release `v1.21.2-madalone.3` (2026-10-20) — not yet tagged
+## Release `v1.21.2-madalone.3` (2026-10-20) — not released separately (rolled into `v1.21.2-madalone.4`)
 
 **Contents:** patches 50 + 51 on top of madalone.2 (48 + 49). Commits `54f237f` / `ccb65c4` (madalone.2 code/docs), `fb7db58` (51), `cf52253` (50), plus docs. Dependency set unchanged from madalone.2 (`jsonrpc-websocket~=3.2.1`).
 
@@ -2148,7 +2148,7 @@ Regression harnesses unchanged: wake race 0 / 0 / 0, patch 51 checks 5/5, K-F an
 
 ---
 
-## Release `v1.21.2-madalone.4` (2026-10-21) — not yet tagged
+## Release `v1.21.2-madalone.4` (2026-10-21) — tagged and released 2026-10-22
 
 **Contents:** patch 52 on top of madalone.3 (`24eff9d`).
 
@@ -2169,7 +2169,14 @@ Regression harnesses unchanged: wake race 0 / 0 / 0, patch 51 checks 5/5, K-F an
 - **Z4:** the refresh ran every 9.9 s on average (7–12 s), the watchdog's normal jittered interval. A 60 s websocket capture showed only position and title updates.
   - The title is re-sent every ~10 s even when unchanged. That is upstream's `show_stream_name` restore, debounced 5 s at `_display_temporary_title`. It happens at the same rate on madalone.2 and .3, so it is not a regression.
 - **Kodi itself went away for ~40 s** at 12:59:08–12:59:46 UTC. The keep-alive failed, then port 9090 refused connections; no command preceded it. The watchdog reconnected on its 4th retry (`retry 4 / 30`). The cause was on the Kodi host, a restart of Kodi or the box, not the integration.
-- Still to come: a day of normal use, then the tag.
+- **Day of use (reviewed 2026-10-22 13:16 UTC):** 25 scored wakes, counted only where the log shows `exit_standby`. The logs cover about 23 of the 28 hours.
+  - All 25 reconnected, the worst after 0.94 s.
+  - 5 presses arrived during a reconnect; all were answered 200, in 0.00–0.53 s.
+  - 20 logos delivered.
+  - 0 `Websocket handshake timed out`: the hang patch 52 bounds did not recur.
+  - 0 `Unhandled exception` / tracebacks.
+  - The only warnings: wake-time `ClientConnectorError` first attempts, retried, and the Kodi-side outage at 12:59.
+- Tagged `v1.21.2-madalone.4` on 2026-10-22; CI published the release.
 
 ## jsonrpc-websocket 4.0.0 evaluation (2026-10-21)
 
