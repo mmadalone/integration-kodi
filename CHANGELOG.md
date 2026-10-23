@@ -11,11 +11,13 @@ Per-patch implementation notes for the madalone fork live in [`KODI-INTEGRATION-
 
 ## Fork (madalone)
 
-### v1.21.2-madalone.5 — (not yet released; follows madalone.4)
+### v1.21.2-madalone.5 — 2026-10-23
 
 - **Kodi's websocket library updated to jsonrpc-websocket 4.0.0** (was pinned to 3.2.1). The new version fixes several connection races: a reply arriving before its request was registered could close the connection, and an old connection's clean-up could close a newer one. It also stops using a timeout setting that aiohttp, the underlying web library, has deprecated, which a future aiohttp could have turned into a broken build.
   - Tested against a real Kodi 21.3, and against a fake Kodi that fails on purpose: identical behaviour to 3.2.1.
   - The 8 s reply timeout and the 5 s connect limit (patch 52) are unchanged.
+- **Used on a Remote 3 for about 18 hours before release:** 11 wakes, all reconnected (worst 0.93 s). Every button pressed while Kodi was reconnecting still acted (6 of 6). 12 logos delivered; not a single connection error from the new library.
+- Release build: ARM emulation is set up with Docker's own GitHub action instead of being installed from Ubuntu's package mirrors, which can hang a release build. Build process only; the integration itself is unaffected.
 - Dependency change only: no code, entity or stored-config changes → **no breaking changes**.
 
 ### v1.21.2-madalone.4 — 2026-10-22

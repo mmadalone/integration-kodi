@@ -9,11 +9,11 @@ Patched fork of [albaintor/integration-kodi](https://github.com/albaintor/integr
 **Owner:** madalone
 **Device:** UC Remote 3 at `192.168.2.204`. **The web-configurator PIN is deliberately NOT recorded here — this file is tracked and pushed to the fork's GitHub repo.** It lives in the private user-level notes (`~/.claude`) / simple-memory. Do not paste it back into any tracked file.
 **Upstream:** `albaintor/integration-kodi` tag `v1.21.2` (commit `5807f0e`, merged 2026-09-23; prior base `v1.21.1`/`a19d2e3`). Re-checked 2026-10-20: nothing newer on `main`; unreleased branch `number_entity` (1.22.0 WIP — zoom / audio-delay number entities).
-**Current branch:** `v1.21.2-patched`. Last CI release `v1.21.2-madalone.4` (2026-10-22). madalone.2 and .3 were rolled into it and never tagged.
-- **Installed on the UC3:** `v1.21.2-madalone.4` (patches 48–52), manual upload 2026-10-21 09:10 UTC. On-device checks passed the same day: P1, Z1, Z2 and Z4 (see `KODI-INTEGRATION-PATCHES.md` "Release v1.21.2-madalone.4"). Before it, madalone.3 ran overnight: 29 wakes, all connected, 13/13 logos, 0 sleep-time errors.
+**Current branch:** `v1.21.2-patched`. Last CI release `v1.21.2-madalone.5` (2026-10-23, jsonrpc-websocket 4.0.0). Before it, `v1.21.2-madalone.4` (2026-10-22); madalone.2 and .3 were rolled into that one and never tagged.
+- **Installed on the UC3:** `v1.21.2-madalone.5` (madalone.4 plus jsonrpc-websocket 4.0.0), manual upload 2026-10-22 13:47 UTC. About 18 h of use before release: 11 wakes all reconnected, 6/6 presses during a reconnect acted, 12 logos, 0 errors. Before it, madalone.4 had a clean day of use: 25 wakes, 5/5 presses, 20 logos (see `KODI-INTEGRATION-PATCHES.md`).
 - madalone.4 adds patch 52, the bounded websocket handshake, after a 2-minute connect hang seen once on madalone.2.
 - Released after a day of use on the device: 25 wakes all reconnected, 5/5 presses during a reconnect acted, 20 logos, no errors. Tag only versions meant as releases: CI publishes a GitHub release for every tag.
-- **Next, `v1.21.2-madalone.5`:** a dependency change only, `jsonrpc-websocket` 3.2.1 → 4.0.0, on the branch `jsonrpc-websocket-4`, rebased onto the madalone.4 release (2026-10-22). Remaining steps: set `release_date`, build, install, a day of use, then tag. Checks are in `KODI-INTEGRATION-PATCHES.md` "Release v1.21.2-madalone.5".
+- madalone.5 changes only the websocket library (3.2.1 → 4.0.0). The evaluation and checks are in `KODI-INTEGRATION-PATCHES.md`.
 - Older checklists still unrun: X1-X3 (v1.21.2 merge), W1-W7 (v1.21.1), V0-V11 (v1.21.0).
 **Language:** Python 3.11 (async/await, `ucapi` 0.7.0, `aiohttp` 3.14, Kodi JSON-RPC)
 **Build toolchain:** `docker.io/unfoldedcircle/r2-pyinstaller:3.11.13-0.4.0`
@@ -121,7 +121,7 @@ Do NOT try to update via API (`/api/intg/drivers/kodi_driver/update`) -- it upda
 
 ### Release (GitHub Release → uc-intg-manager)
 
-`.github/workflows/build.yml` builds the aarch64 binary and publishes a **GitHub Release** on every `v*` tag push (assets `uc-intg-kodi-v<VERSION>-aarch64.tar.gz` + `uc-src.hash`, `prerelease: false`, `make_latest: legacy`). It fails if `driver.json` `version` ≠ tag — **true only since 2026-09-01**; before that the check derived its expected value *from `driver.json`* and compared it to `driver.json`, so it could never fail, and since that value also names the asset, a stale `driver.json` would have published an asset named after the previous version on the new tag, green. So a release is: bump `driver.json`, commit, `git tag -a vX.Y.Z-madalone.N`, `git push origin <branch> <tag>`, then `gh run watch`. The local `kodi-integration-v<VERSION>.tar.gz` is only for manual web-UI installs.
+`.github/workflows/build.yml` builds the aarch64 binary (ARM emulation via `docker/setup-qemu-action` since madalone.5; the old apt-based setup could stall on Ubuntu mirrors) and publishes a **GitHub Release** on every `v*` tag push (assets `uc-intg-kodi-v<VERSION>-aarch64.tar.gz` + `uc-src.hash`, `prerelease: false`, `make_latest: legacy`). It fails if `driver.json` `version` ≠ tag — **true only since 2026-09-01**; before that the check derived its expected value *from `driver.json`* and compared it to `driver.json`, so it could never fail, and since that value also names the asset, a stale `driver.json` would have published an asset named after the previous version on the new tag, green. So a release is: bump `driver.json`, commit, `git tag -a vX.Y.Z-madalone.N`, `git push origin <branch> <tag>`, then `gh run watch`. The local `kodi-integration-v<VERSION>.tar.gz` is only for manual web-UI installs.
 
 #### ⚠️ uc-intg-manager points at UPSTREAM, and `developer.url` cannot fix it
 

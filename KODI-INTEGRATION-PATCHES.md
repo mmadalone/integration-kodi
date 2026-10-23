@@ -2220,7 +2220,7 @@ F2 found no orphaned connection with either version. pykodi's `connect()` cancel
 
 **Side finding:** the scratch environment used for the patch 48–52 harnesses had 4.0.0 installed, while the shipped build uses 3.2.1. The harnesses replace pykodi's connection with fakes, so none of them exercised this library, and their results hold for both versions. Before trusting a harness, check that its environment matches the pins.
 
-## Release `v1.21.2-madalone.5` (prepared 2026-10-21) — not yet tagged
+## Release `v1.21.2-madalone.5` (prepared 2026-10-21) — tagged and released 2026-10-23
 
 **Contents:** the only change is `requirements.txt` `jsonrpc-websocket~=3.2.1` → `~=4.0.0`, prepared on the local branch `jsonrpc-websocket-4`. It goes out only after `v1.21.2-madalone.4` is tagged, so each release changes one thing. At release time: rebase onto the tagged `v1.21.2-patched`, set `driver.json` `release_date`, build, install, a day of use, then tag.
 
@@ -2248,3 +2248,12 @@ F2 found no orphaned connection with either version. pykodi's `connect()` cancel
 - The madalone.4 checks again: P1, a button-press wake that leaves Kodi disconnected no more than ~6 s, and Z1–Z4.
 - **Q1:** no `Transport Error` / `Websocket error detected` lines in a day of normal use.
 - **Q2:** if Kodi drops or restarts, as on 2026-10-21 at 12:59 UTC, the integration reconnects by itself.
+
+**On-device results** (installed 2026-10-22 13:47 UTC by manual upload; checked 2026-10-23 07:32 UTC, about 18 h of use, of which the log held the last ~15 h):
+- **P1:** 11 wakes, all reconnected (median 0.16 s, worst 0.93 s). 6 presses arrived during a reconnect, and all were answered 200 in 0.12–0.23 s.
+- **Z2:** 12 logos delivered.
+- **Z1:** 0 `Unhandled exception`.
+- **Q1:** 0 `Transport Error`, 0 `Websocket error detected`, 0 `Connection already open`, and no handshake timeouts. The only warnings were two wake-time `ClientConnectorError` first attempts, both retried.
+- **Q2:** not exercised in the field (Kodi did not drop); covered by `ws_compare.py` F1.
+
+**Release build:** this release is the first built with `docker/setup-qemu-action` in `.github/workflows/build.yml`, replacing the apt-installed qemu and the `multiarch/qemu-user-static` image. The integration binary is unaffected; see that commit's message.
